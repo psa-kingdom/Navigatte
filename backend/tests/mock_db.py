@@ -68,6 +68,22 @@ class MockCollection:
                     if exists != val["$exists"]:
                         return False
                     continue
+                if "$in" in val:
+                    doc_val = doc.get(key)
+                    if hasattr(doc_val, "value"):
+                        doc_val = doc_val.value
+                    in_vals = [v.value if hasattr(v, "value") else v for v in val["$in"]]
+                    if doc_val not in in_vals and str(doc_val) not in [str(v) for v in in_vals]:
+                        return False
+                    continue
+                if "$nin" in val:
+                    doc_val = doc.get(key)
+                    if hasattr(doc_val, "value"):
+                        doc_val = doc_val.value
+                    nin_vals = [v.value if hasattr(v, "value") else v for v in val["$nin"]]
+                    if doc_val in nin_vals or str(doc_val) in [str(v) for v in nin_vals]:
+                        return False
+                    continue
 
             doc_val = doc.get(key)
             # Unwrap Enum values if present

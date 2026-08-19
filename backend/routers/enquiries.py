@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 import logging
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -10,6 +10,7 @@ from core.database import get_database
 from core.dependencies import get_current_admin
 from models.admin import AdminUser
 from models.enquiry import Enquiry, EnquiryNote, EnquiryStatus
+from models.project import ProjectStatus
 from schemas.enquiry import (
     EnquiryCreate,
     EnquiryNoteCreate,
@@ -20,6 +21,41 @@ from schemas.enquiry import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["enquiries"])
+
+
+# ---------------------------------------------------------------------------
+# Admin Stats Aggregate
+# ---------------------------------------------------------------------------
+
+@router.get("/admin/stats", response_model=Dict[str, Any])
+async def admin_get_stats(
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+):
+    """Returns aggregate counts for the admin Command Center overview dashboard."""
+    pipeline_statuses = [EnquiryStatus.CONTACTED.value, EnquiryStatus.QUALIFIED.value]
+
+    enquiries_new, enquiries_pipeline, projects_total, projects_published = await _resolve_stats(
+        db, pipeline_statuses
+    )
+
+    return {
+        "enquiries_new": enquiries_new,
+        "enquiries_pipeline": enquiries_pipeline,
+        "projects_total": projects_total,
+        "projects_published": projects_published,
+    }
+
+
+async def _resolve_stats(db: AsyncIOMotorDatabase, pipeline_statuses: list) -> tuple:
+    """Helper to resolve stats counts — separated for testability."""
+    enquiries_new = await db.enquiries.count_documents({"status": EnquiryStatus.NEW.value})
+    enquiries_pipeline = await db.enquiries.count_documents(
+        {"status": {"$in": pipeline_statuses}}
+    )
+    projects_total = await db.projects.count_documents({})
+    projects_published = await db.projects.count_documents({"status": ProjectStatus.PUBLISHED.value})
+    return enquiries_new, enquiries_pipeline, projects_total, projects_published
 
 
 # ---------------------------------------------------------------------------

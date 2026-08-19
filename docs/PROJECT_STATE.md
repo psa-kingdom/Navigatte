@@ -1,7 +1,7 @@
 # Navigatte — Project State
 
-**Last Updated**: February 2026  
-**Current Phase**: Phase 1 Foundation Completed  
+**Last Updated**: August 2026  
+**Current Phase**: Phase 2 Admin Command Center Completed  
 **Repository**: `psa-kingdom/Navigatte`  
 **Active Working Branch**: `test` (Tracks `origin/test`; `main` is protected baseline)
 
@@ -51,7 +51,50 @@ The backend has been modularized from a single monolithic file into domain-orien
 
 ---
 
-## 3. Database Schema Overview
+## 3. Completed in Phase 2 (Admin Command Center)
+
+### A. Backend: Stats Aggregate Endpoint
+- `GET /api/admin/stats` — Returns aggregate counts:
+  - `enquiries_new` (status=new), `enquiries_pipeline` (contacted+qualified)
+  - `projects_total`, `projects_published`
+- Mock DB extended with `$in` and `$nin` operator support for full query coverage.
+- 2 new backend tests: `test_admin_stats_endpoint`, `test_admin_stats_unauthorized`.
+
+### B. Frontend: Admin Command Center
+The single-purpose `AdminDashboardPage` is replaced by a **tabbed Command Center** at `/admin/dashboard`:
+
+#### Tab 1 — Overview
+- Greeting bar with current date
+- `StatsGrid` — 4 animated metric cards (New Enquiries, Pipeline Active, Live Projects, Total Projects) with click-through to the relevant tab
+
+#### Tab 2 — Enquiries CRM
+- 5-stage pipeline filter tabs: All · New · Contacted · Qualified · Converted · Closed
+- Debounced search across name, email, company
+- Sortable lead table (sort by name, company, status, date)
+- CSV export (client-side from loaded data)
+- `LeadDrawer` slide-over panel:
+  - Status pipeline dropdown with instant update
+  - One-click copy email & phone
+  - Internal note timeline (newest first)
+  - Note composer with add action
+
+#### Tab 3 — Projects CMS
+- Full CRUD grid (all statuses visible to admin, not just published)
+- Status badge per card (draft/published/archived)
+- Slug display under title
+- Enhanced `ProjectFormDialog`:
+  - Status selector (draft / published / archived)
+  - Slug editor (shows URL preview `/projects/slug`)
+  - All original fields preserved
+
+### C. Frontend Navigation
+- Sticky header with tab nav (desktop) + bottom mobile tab bar
+- Active tab persisted to `sessionStorage`
+- Framer Motion page transitions between tabs
+
+---
+
+## 4. Database Schema Overview
 
 | Collection | Key Fields | Indexes |
 | :--- | :--- | :--- |
@@ -63,7 +106,7 @@ The backend has been modularized from a single monolithic file into domain-orien
 
 ---
 
-## 4. API Endpoints Map
+## 5. API Endpoints Map
 
 ### Public Endpoints
 - `GET  /api/` — Root status
@@ -77,6 +120,7 @@ The backend has been modularized from a single monolithic file into domain-orien
 - `POST /api/auth/login` — Authenticate and receive JWT cookie & token
 - `POST /api/auth/logout` — Clear session
 - `GET  /api/auth/me` — Verify authenticated admin
+- `GET  /api/admin/stats` — Aggregate metrics for Command Center overview
 - `GET  /api/admin/projects` — List all projects across all statuses
 - `POST /api/admin/projects` — Create project
 - `PUT  /api/admin/projects/{id}` — Update project
@@ -89,22 +133,21 @@ The backend has been modularized from a single monolithic file into domain-orien
 
 ---
 
-## 5. Roadmap & Deferred Scope
-
-### Phase 2: Core Admin Command Center & CRM UI
-- **Admin Overview Dashboard**: Unified 4-card metric overview (`New Enquiries`, `Pipeline`, `Projects`, `Health`) with quick actions.
-- **Enquiries CRM UI**: 5-stage pipeline filter tabs, slide-over lead detail drawer, one-click copy email/phone, and CSV export.
-- **Projects CMS UI Enhancements**: Draft/publish toggle, slug editor, rich highlights repeater.
-- **Image Upload Integration**: Direct media upload instead of URL-only paste.
+## 6. Roadmap & Deferred Scope
 
 ### Phase 3: Communication Studio & Email Integration
 - **Resend Provider Adapter**: Abstracted email delivery service.
 - **Email Templates & Campaign Outbox**: Test mode vs. production mode dispatching.
 - **Webhook Ingestion**: Svix-verified webhook processor for delivery, bounce, and open tracking.
 
+### Optional / Future
+- **Image Upload**: Direct media upload (currently URL-paste only, per user choice).
+- **Insights/Blog CMS**: Content management for articles and case studies.
+
 ---
 
-## 6. Verification Status
-- **Backend Tests**: 19 passing tests in `backend/tests/` (100% pass rate).
+## 7. Verification Status
+- **Backend Tests**: 21 passing tests in `backend/tests/` (100% pass rate). 19 skipped (live-server integration tests requiring a deployed backend URL).
+- **Frontend Build**: Compiled successfully — 373 kB gzipped JS, 14 kB CSS. Zero errors.
 - **Git Branch**: Working cleanly on `test`; `main` untouched.
-- **Backward Compatibility**: Fully verified against existing frontend contracts and database models.
+- **Backward Compatibility**: All existing public API contracts preserved; existing frontend pages unaffected.

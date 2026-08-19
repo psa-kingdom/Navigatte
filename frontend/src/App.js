@@ -8,7 +8,7 @@ import ProjectsPage from "@/pages/ProjectsPage";
 import PrivacyPolicyPage from "@/pages/PrivacyPolicyPage";
 import TermsPage from "@/pages/TermsPage";
 import AdminLoginPage from "@/pages/admin/AdminLoginPage";
-import AdminDashboardPage from "@/pages/admin/AdminDashboardPage";
+import AdminCommandCenterPage from "@/pages/admin/AdminCommandCenterPage";
 import ProtectedRoute from "@/components/admin/ProtectedRoute";
 import { AdminAuthProvider } from "@/context/AdminAuthContext";
 import { Toaster } from "@/components/ui/toaster";
@@ -31,7 +31,7 @@ function App() {
             path="/admin/dashboard"
             element={
               <ProtectedRoute>
-                <AdminDashboardPage />
+                <AdminCommandCenterPage />
               </ProtectedRoute>
             }
           />

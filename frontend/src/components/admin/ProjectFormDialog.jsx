@@ -11,9 +11,22 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import TagInput from "./TagInput";
 import api from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+
+const STATUS_OPTIONS = [
+  { value: "draft",     label: "Draft",     description: "Not visible on portfolio" },
+  { value: "published", label: "Published", description: "Live on public portfolio" },
+  { value: "archived",  label: "Archived",  description: "Hidden, retained for records" },
+];
 
 const emptyForm = {
   title: "",
@@ -23,6 +36,8 @@ const emptyForm = {
   highlights: [],
   featured: false,
   order: 0,
+  status: "published",
+  slug: "",
 };
 
 const ProjectFormDialog = ({ open, onOpenChange, project, onSaved, availableTags = [] }) => {
@@ -41,6 +56,8 @@ const ProjectFormDialog = ({ open, onOpenChange, project, onSaved, availableTags
         highlights: project.highlights || [],
         featured: project.featured,
         order: project.order,
+        status: project.status || "published",
+        slug: project.slug || "",
       });
     } else {
       setForm(emptyForm);
@@ -56,6 +73,8 @@ const ProjectFormDialog = ({ open, onOpenChange, project, onSaved, availableTags
       .map((h) => h.trim())
       .filter(Boolean);
     const payload = { ...form, highlights: cleanHighlights };
+    // Only include slug if non-empty
+    if (!payload.slug) delete payload.slug;
     try {
       if (project) {
         await api.put(`/projects/${project.id}`, payload);
@@ -73,6 +92,8 @@ const ProjectFormDialog = ({ open, onOpenChange, project, onSaved, availableTags
     }
   };
 
+  const selectedStatus = STATUS_OPTIONS.find((s) => s.value === form.status);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -85,6 +106,7 @@ const ProjectFormDialog = ({ open, onOpenChange, project, onSaved, availableTags
           </DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4 mt-2">
+          {/* Title */}
           <div>
             <Label className="text-ash text-xs">Title</Label>
             <Input
@@ -95,6 +117,8 @@ const ProjectFormDialog = ({ open, onOpenChange, project, onSaved, availableTags
               className="bg-obsidian border-white/10 text-cloud mt-1.5"
             />
           </div>
+
+          {/* Description */}
           <div>
             <Label className="text-ash text-xs">Description</Label>
             <Textarea
@@ -106,6 +130,8 @@ const ProjectFormDialog = ({ open, onOpenChange, project, onSaved, availableTags
               className="bg-obsidian border-white/10 text-cloud mt-1.5"
             />
           </div>
+
+          {/* Highlights */}
           <div>
             <Label className="text-ash text-xs">Highlights (one bullet point per line)</Label>
             <Textarea
@@ -114,9 +140,11 @@ const ProjectFormDialog = ({ open, onOpenChange, project, onSaved, availableTags
               value={(form.highlights || []).join("\n")}
               onChange={(e) => setForm({ ...form, highlights: e.target.value.split("\n") })}
               className="bg-obsidian border-white/10 text-cloud mt-1.5"
-              placeholder="e.g. Key accomplishment 1&#10;Key accomplishment 2"
+              placeholder={`e.g. Key accomplishment 1\nKey accomplishment 2`}
             />
           </div>
+
+          {/* Image URL */}
           <div>
             <Label className="text-ash text-xs">Image URL</Label>
             <Input
@@ -128,6 +156,8 @@ const ProjectFormDialog = ({ open, onOpenChange, project, onSaved, availableTags
               placeholder="https://…"
             />
           </div>
+
+          {/* Tags */}
           <div>
             <Label className="text-ash text-xs mb-1.5 block">Service Tags</Label>
             <TagInput
@@ -136,6 +166,60 @@ const ProjectFormDialog = ({ open, onOpenChange, project, onSaved, availableTags
               suggestions={availableTags}
             />
           </div>
+
+          {/* Status selector */}
+          <div>
+            <Label className="text-ash text-xs mb-1.5 block">Publication Status</Label>
+            <Select
+              value={form.status}
+              onValueChange={(v) => setForm({ ...form, status: v })}
+            >
+              <SelectTrigger
+                data-testid="project-form-status"
+                className="bg-obsidian border-white/10 text-cloud h-10"
+              >
+                <SelectValue placeholder="Select status" />
+              </SelectTrigger>
+              <SelectContent className="bg-graphite border-white/10">
+                {STATUS_OPTIONS.map((opt) => (
+                  <SelectItem
+                    key={opt.value}
+                    value={opt.value}
+                    className="text-cloud focus:bg-white/10 focus:text-cloud"
+                  >
+                    <div>
+                      <span className="font-medium">{opt.label}</span>
+                      <span className="text-fog text-xs ml-2">{opt.description}</span>
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {selectedStatus && (
+              <p className="text-xs text-fog mt-1">{selectedStatus.description}</p>
+            )}
+          </div>
+
+          {/* Slug — only shown when editing */}
+          {project && (
+            <div>
+              <Label className="text-ash text-xs">URL Slug</Label>
+              <Input
+                data-testid="project-form-slug"
+                value={form.slug}
+                onChange={(e) =>
+                  setForm({ ...form, slug: e.target.value.toLowerCase().replace(/\s+/g, "-") })
+                }
+                className="bg-obsidian border-white/10 text-cloud mt-1.5 font-mono text-sm"
+                placeholder="auto-generated-from-title"
+              />
+              <p className="text-xs text-fog mt-1">
+                URL path: <span className="text-ash">/projects/{form.slug || "auto-generated"}</span>
+              </p>
+            </div>
+          )}
+
+          {/* Featured toggle */}
           <div className="flex items-center justify-between border border-white/10 rounded-lg px-4 py-3">
             <div>
               <Label className="text-cloud text-sm">Featured on Homepage</Label>
@@ -147,6 +231,8 @@ const ProjectFormDialog = ({ open, onOpenChange, project, onSaved, availableTags
               onCheckedChange={(v) => setForm({ ...form, featured: v })}
             />
           </div>
+
+          {/* Order */}
           <div>
             <Label className="text-ash text-xs">Order</Label>
             <Input
@@ -158,6 +244,7 @@ const ProjectFormDialog = ({ open, onOpenChange, project, onSaved, availableTags
             />
             <p className="text-xs text-fog mt-1.5">Lower numbers appear first</p>
           </div>
+
           {error && (
             <p data-testid="project-form-error" className="text-sm text-destructive">
               {error}

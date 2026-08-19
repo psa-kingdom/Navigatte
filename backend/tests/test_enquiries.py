@@ -120,3 +120,24 @@ def test_admin_enquiry_lifecycle_and_notes(client, auth_headers):
     assert len(updated_lead["notes"]) == 1
     assert "scheduled a 30-min discovery" in updated_lead["notes"][0]["text"]
     assert "created_by" in updated_lead["notes"][0]
+
+
+def test_admin_stats_endpoint(client, auth_headers):
+    """Admin stats endpoint returns aggregate counts for the Command Center dashboard."""
+    resp = client.get("/api/admin/stats", headers=auth_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "enquiries_new" in data
+    assert "enquiries_pipeline" in data
+    assert "projects_total" in data
+    assert "projects_published" in data
+    # All values must be non-negative integers
+    for key in ("enquiries_new", "enquiries_pipeline", "projects_total", "projects_published"):
+        assert isinstance(data[key], int)
+        assert data[key] >= 0
+
+
+def test_admin_stats_unauthorized(client):
+    """Stats endpoint must require authentication."""
+    resp = client.get("/api/admin/stats")
+    assert resp.status_code == 401
