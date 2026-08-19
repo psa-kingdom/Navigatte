@@ -1,116 +1,105 @@
 # Navigatte — Project State
 
 **Last Updated**: August 2026  
-**Current Phase**: Phase 2 Admin Command Center & Infrastructure Hardening Completed  
+**Current Phase**: Phase 2A Admin Platform Foundation & Scalable Navigation Architecture Completed  
 **Repository**: `psa-kingdom/Navigatte`  
-**Active Working Branch**: `test` (Tracks `origin/test`; `main` is protected baseline)
+**Active Working Branch**: `main` (Production Baseline & Deployment Synced)
 
 ---
 
 ## 1. Executive Summary
 
-Navigatte is an enterprise technology, intelligent automation, and digital platforms consultancy platform. The platform consists of a public-facing React 19 web application (Vercel deployment) and a modular FastAPI REST API backend (Railway deployment) with MongoDB persistence.
+Navigatte is an enterprise technology, intelligent automation, and digital platforms consultancy platform. It combines a high-performance marketing website with an internal **Admin Command Center** for managing client portfolio case studies, customer enquiries/leads, and enterprise services.
+
+The platform is deployed as a decoupled monorepo:
+- **Frontend**: React 19 SPA deployed on Vercel with CRACO, Tailwind CSS, Radix UI, Framer Motion.
+- **Backend**: FastAPI modular ASGI API deployed on Railway with Motor AsyncIO MongoDB driver, PyJWT, and Bcrypt.
+- **Database**: MongoDB Atlas Production Cluster.
 
 ---
 
 ## 2. Phase 1 — Foundation (COMPLETE)
 
-### A. Backend Modularization
-The backend is structured into domain-oriented packages:
-- `backend/core/`: Centralized settings (`config.py`), database lifecycle (`database.py`), cryptography & JWT token management (`security.py`), and authorization dependencies (`dependencies.py`).
-- `backend/models/`: MongoDB documents (`BaseDocument`, `Project`, `Enquiry`, `AdminUser`).
-- `backend/schemas/`: Pydantic validation schemas.
-- `backend/routers/`: API routing (`/api/auth`, `/api/projects`, `/api/enquiries`, `/api/status`).
-- `backend/services/`: Seeding services (`seeder.py`).
-- `backend/server.py`: Application entry point with async lifespan hooks.
-
-### B. Security & Config Hardening
-- **Strict Production Checks**: Rejects unconfigured `JWT_SECRET` in production environments.
-- **Admin Seeding Security**: No fallback admin credentials seeded in production unless explicitly defined.
-- **Brute-Force Protection**: 5 attempts / 15-minute lockout keyed by identifier.
-- **Honeypot Bot Mitigation**: Public enquiry form silently rejects bot submissions.
-
-### C. Projects Domain Evolution
-- **Lifecycle Statuses**: `draft`, `published`, `archived`.
-- **Slug Routing**: Auto-generated URL slugs with slug/ID fallback resolution.
-- **Rich Case Study Fields**: Support for `client_name`, `highlights`, `gallery_urls`, `industry_slug`, `service_slug`, and `seo` metadata.
-- **Backward Compatibility**: Fully preserves legacy project records and public API contracts.
-
-### D. Enquiries / CRM Foundation
-- **Public Ingestion**: `POST /api/enquiries` with email format validation and honeypot protection.
-- **Status Pipeline**: Enums for `new`, `contacted`, `qualified`, `converted`, `closed`.
-- **Internal Notes**: Timestamped note records appended to leads.
+- **Backend Modularization**: Decoupled into `core/`, `models/`, `schemas/`, `routers/`, `services/`, and `tests/`.
+- **Security & Config Hardening**: Environment validation, brute-force lockout (5 attempts / 15 min), honeypot spam protection, secure password hashing.
+- **Projects Domain Evolution**: `draft`/`published`/`archived` lifecycle, automatic URL slug generation, case study highlights and taxonomy.
+- **Enquiries / CRM Foundation**: Public lead ingestion (`POST /api/enquiries`), 5-stage status pipeline, internal timestamped notes.
 
 ---
 
-## 3. Phase 2 — Admin Command Center & Infrastructure Hardening (COMPLETE & RECONCILED)
+## 3. Phase 2A — Admin Platform Foundation & Navigation Architecture (COMPLETE)
 
-### A. Environment-Aware CORS Architecture
-- **Multi-Origin Support**: Combines explicit origins (`CORS_ORIGINS`) with a scoped regex pattern (`CORS_ORIGIN_REGEX`).
-- **Production Origins**: `https://navigatte.com`, `https://www.navigatte.com`, `https://navigatte-website.vercel.app`.
-- **Vercel Preview Deployments**: Scoped regex (`^https:\/\/(navigatte-website|navigatte)(-[a-z0-9-]+)?-psumanassociates-9980s-projects\.vercel\.app$`) dynamically allows preview and Git branch deployments without wildcards or arbitrary domain reflection.
-- **Local Development**: `http://localhost:3000`, `http://127.0.0.1:3000`, `http://localhost:5173`, `http://127.0.0.1:5173`.
-- **Preflight & Credentials**: `allow_credentials=True` correctly reflects the trusted requesting origin with `Access-Control-Allow-Credentials: true`.
+### A. Scalable Admin Navigation Architecture
+- **Single Source of Truth (`adminNavigationConfig.js`)**:
+  - Centralized registry of all admin modules grouped into *Operations*, *Content & Growth*, and *Platform*.
+  - Configurable module status (`active` vs. `coming-soon`), badges (`CRM`, `CMS`, `Phase 3`, `Phase 2B`), icons, and route descriptions.
+- **Persistent Trigger & Slide-Over Drawer (`AdminNavigationDrawer.jsx`)**:
+  - **Desktop**: Compact persistent trigger in the header with hover/click open triggers, a 280ms mouse-leave debounce bridge to prevent accidental dismissals, click-outside / backdrop dismiss, and Escape key dismissal.
+  - **Mobile**: Tap-to-open drawer overlay with smooth backdrop blur, keyboard accessibility, and ARIA attributes (`aria-expanded`, `aria-label`, `role="navigation"`).
+- **Admin Layout Shell (`AdminShell.jsx`)**:
+  - Replaces section-heavy header tab strips with a scalable top application bar (Trigger + Brand + Active Section Breadcrumb + User Profile + Logout).
+  - Encapsulates layout, responsive padding, and drawer overlay.
 
-### B. Cross-Site Cookie & Auth Architecture
-- **Cookie Settings**: Uses `SameSite=None` + `Secure=True` in production/cross-site environments to allow Vercel (`.vercel.app`) to transmit session cookies to Railway (`.up.railway.app`). Uses `SameSite=Lax` + `Secure=False` in local HTTP dev.
-- **Bearer Fallback**: Axios interceptor attaches `Authorization: Bearer <token>` from `localStorage` on all API requests, providing resilience in browsers with strict third-party cookie restrictions (Safari ITP / Brave).
-- **Graceful Error Handling**: Distinguishes Network/CORS server connection errors from 401 invalid credentials, 429 lockout, and 500 server errors.
+### B. Enquiries CRM & Command Center
+- **Overview Dashboard**: Animated 4-card `StatsGrid` connected to `GET /api/admin/stats` & `GET /api/admin/overview`.
+- **5-Stage Pipeline CRM**: Filterable by `All`, `New`, `Contacted`, `Qualified`, `Converted`, `Closed` with debounced search, sortable table, and client-side CSV export.
+- **Lead Drawer**: Slide-over panel with status stepper, message preview, quick copy email/phone, and internal note timeline/composer.
+- **Projects CMS**: Full admin CRUD table supporting status toggles (`draft`, `published`, `archived`), URL slugs, client names, and service tags.
 
-### C. Admin Command Center UI (`/admin/dashboard`)
-- **Tab 1 — Overview**:
-  - Greeting bar with formatted current date.
-  - `StatsGrid`: 4 animated metric cards (`New Enquiries`, `Pipeline Active`, `Live Projects`, `Total Projects`) with click-through navigation to relevant tabs.
-  - Quick-action shortcuts (`View Enquiries`, `Manage Projects`).
-- **Tab 2 — Enquiries CRM**:
-  - 5-stage pipeline filter tabs (`All`, `New`, `Contacted`, `Qualified`, `Converted`, `Closed`) with live counters.
-  - Debounced search across name, email, and company.
-  - Sortable table by name, company, status, and submission date.
-  - Client-side CSV export.
-  - `LeadDrawer` slide-over panel with status stepper dropdown, copy email/phone, message display, and internal note composer/timeline.
-- **Tab 3 — Projects CMS**:
-  - Full CRUD grid showing all lifecycle statuses (`published`, `draft`, `archived`) with status badges and slug paths.
-  - `ProjectFormDialog`: Supports title, client name, description, highlights list, image URL, service tags, status dropdown (draft/published/archived), URL slug editor, and featured toggle.
-- **Navigation**: Desktop header navigation + mobile bottom tab bar, persisted active tab in `sessionStorage`, and Framer Motion transitions.
-
-### D. API Contract Reconciliation
-- Both `GET /api/admin/stats` and `GET /api/admin/overview` are bound to the stats aggregate endpoint for complete contract compatibility.
+### C. CORS & Cross-Site Authentication
+- **Scoped `CORS_ORIGIN_REGEX`**: `^https:\/\/(navigatte-website|navigatte)(-[a-z0-9-]+)?-psumanassociates-9980s-projects\.vercel\.app$` dynamically permits changing Vercel Preview URLs without wildcards.
+- **Cross-Site Cookies**: `SameSite=None; Secure=True; HttpOnly=True; Path=/` in production/staging environments.
+- **Dual Authentication Layer**: HttpOnly session cookies + `Authorization: Bearer <token>` fallback in `localStorage`.
 
 ---
 
-## 4. Phase Boundary Audit
+## 4. Enquiries Data RCA (0-Enquiry Situation)
 
-- **Phase 1 (Foundation)**: COMPLETE
-- **Phase 2 (Command Center & CRM)**: COMPLETE & RECONCILED
-- **Phase 3 (Communication Studio & Resend)**: NOT STARTED (Deferred to Phase 3)
+| Dimension | Finding |
+|---|---|
+| **Root Cause** | **EXPECTED (Fresh Database State)**: The production MongoDB cluster was initialized without fake lead submissions. The demo seeder (`seeder.py`) seeds 8 showcase projects but intentionally avoids fabricating fake customer enquiries. |
+| **Ingestion Pipeline** | Verified live on Railway: `POST /api/enquiries` validates input, detects honeypots, and successfully inserts documents into the `enquiries` collection with `status: "new"`. |
+| **Query & Aggregation** | Verified: `GET /api/admin/enquiries` and `GET /api/admin/stats` correctly retrieve persisted records and update metric cards in real time. |
+| **Integrity Policy** | Zero enquiries is genuine and correct for a newly deployed database. No artificial mock leads were injected into production. |
 
 ---
 
-## 5. Deployment Architecture
+## 5. Master Roadmap & Dependency Hierarchy
 
 ```
-LOCAL DEVELOPMENT
-├── Frontend: http://localhost:3000
-├── Backend:  http://localhost:8000
-└── Database: mongodb://localhost:27017/navigatte_dev
+PHASE 1: Foundation (COMPLETE)
+└── Backend modularization, JWT/cookies, MongoDB models, seeder, test harness.
 
-PREVIEW / STAGING (Vercel Preview → Railway Test/Staging)
-├── Frontend: https://navigatte-website-*-psumanassociates-9980s-projects.vercel.app
-├── Backend:  https://navigatte-website-production.up.railway.app (or staging backend)
-└── CORS:     Dynamically matched by CORS_ORIGIN_REGEX with credentials & cross-site cookies
+PHASE 2A: Admin Platform Foundation (COMPLETE)
+├── Admin Shell & Scalable Navigation Architecture (adminNavigationConfig)
+├── Persistent Navigation Drawer & Trigger (Desktop & Mobile)
+├── Command Center Overview & Stats Aggregate (/api/admin/stats & /api/admin/overview)
+├── Enquiries CRM & 5-Stage Pipeline (LeadDrawer, Notes, CSV export)
+├── Projects CMS (Lifecycle statuses, slug management, client names)
+└── Durable CORS & Cross-Site Cookie Architecture
 
-PRODUCTION
-├── Frontend: https://navigatte.com (or https://navigatte-website.vercel.app)
-├── Backend:  https://navigatte-website-production.up.railway.app
-└── Database: MongoDB Atlas Production Cluster
+PHASE 2B: Admin UX Evolution (BACKLOG / PLANNED)
+├── [Task A] Global Admin Action/Search Bar (kokonutui action-search-bar reference)
+│   └── Dependencies: adminNavigationConfig, searchable entity schemas, permissions
+├── [Task B] Restrained Flow Field Background System (kokonutui flow-field reference)
+│   └── Dependencies: foreground contrast audit, prefers-reduced-motion support
+├── [Task C] Bento-Grid Command Center (kokonutui bento-grid reference)
+│   └── Dependencies: Phase 2A metrics, modular card components
+└── [Task D] Spotlight Module Cards (kokonutui spotlight-cards reference)
+    └── Dependencies: Bento layout, design token alignment
+
+PHASE 3: Communications Studio & Email Delivery (DEFERRED / NOT STARTED)
+├── Resend Provider Adapter & Delivery Service
+├── Email Template Engine & Campaign Outbox
+├── Webhook Processor (Delivery, Bounce, Open tracking)
+└── Audience & Subscriber Management
 ```
 
 ---
 
-## 6. Verification Status
+## 6. Verification Summary
 
-- **Backend Tests**: 28 passed, 19 skipped (live server), 0 failed.
-- **CORS / Preflight Tests**: 7 passed (production, preview regex, branch preview, local, untrusted rejection, cross-origin login flow, alias contract).
-- **Frontend Build**: Craco production build compiled successfully (0 errors, 0 warnings).
-- **Git Branch**: `test` (clean working tree, up to date with `origin/test`).
-- **Main Branch**: Untouched.
+- **Backend Pytest Suite**: **28 passed / 0 failed / 19 skipped** (100% pass rate on unit, integration, and CORS tests).
+- **Frontend Build**: **Compiled successfully** (`npx craco build` — 0 errors, 0 warnings).
+- **Deployment Smoke Test**: **PASS** (100% checks passed against live Railway backend and local test server).
+- **Git State**: Clean working tree on `main` branch, synced with `origin/main` at commit `7b9c93c`.

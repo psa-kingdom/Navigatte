@@ -1,27 +1,17 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Plus, Pencil, Trash2, LogOut, Star, LayoutDashboard, Inbox, FolderOpen } from "lucide-react";
-import { useAdminAuth } from "@/context/AdminAuthContext";
+import { Plus, Pencil, Trash2, Star, Inbox, FolderOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import Logo from "@/components/layout/Logo";
+import AdminShell from "@/components/admin/layout/AdminShell";
 import ProjectFormDialog from "@/components/admin/ProjectFormDialog";
 import StatsGrid from "@/components/admin/overview/StatsGrid";
 import EnquiriesCRM from "@/components/admin/enquiries/EnquiriesCRM";
 import api from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 
-// ---------------------------------------------------------------------------
-// Nav tabs
-// ---------------------------------------------------------------------------
-const TABS = [
-  { value: "overview",   label: "Overview",   Icon: LayoutDashboard },
-  { value: "enquiries",  label: "Enquiries",  Icon: Inbox },
-  { value: "projects",   label: "Projects",   Icon: FolderOpen },
-];
-
 const tabVariants = {
   hidden: { opacity: 0, y: 10 },
-  show:   { opacity: 1, y: 0, transition: { duration: 0.3, ease: [0.22, 1, 0.36, 1] } },
+  show:   { opacity: 1, y: 0, transition: { duration: 0.25, ease: [0.22, 1, 0.36, 1] } },
   exit:   { opacity: 0, y: -6, transition: { duration: 0.15 } },
 };
 
@@ -131,7 +121,7 @@ const ProjectsTab = () => {
       {/* Header row */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-display font-light text-cloud">Projects</h2>
+          <h2 className="text-xl font-display font-light text-cloud">Projects & Showcase</h2>
           <p className="text-sm text-ash mt-1">
             {projects.length} total · {featuredCount}/5 featured on homepage
           </p>
@@ -237,7 +227,6 @@ const ProjectsTab = () => {
 // Main AdminCommandCenterPage
 // ---------------------------------------------------------------------------
 const AdminCommandCenterPage = () => {
-  const { admin, logout } = useAdminAuth();
   const [activeTab, setActiveTab] = useState(
     () => sessionStorage.getItem("admin_tab") ?? "overview"
   );
@@ -261,91 +250,31 @@ const AdminCommandCenterPage = () => {
   const handleTabChange = (tab) => {
     setActiveTab(tab);
     sessionStorage.setItem("admin_tab", tab);
-    // Refresh stats when switching to overview
     if (tab === "overview") fetchStats();
   };
 
   return (
-    <div className="min-h-screen bg-obsidian">
-      {/* Sticky header */}
-      <header className="border-b border-white/10 sticky top-0 bg-obsidian/90 backdrop-blur-md z-10">
-        <div className="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-6">
-            <Logo />
-
-            {/* Tab navigation */}
-            <nav className="hidden sm:flex items-center gap-1">
-              {TABS.map(({ value, label, Icon }) => (
-                <button
-                  key={value}
-                  onClick={() => handleTabChange(value)}
-                  data-testid={`admin-tab-${value}`}
-                  className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-sm transition-colors
-                              ${activeTab === value
-                                ? "bg-white/8 text-cloud font-medium"
-                                : "text-fog hover:text-ash hover:bg-white/5"}`}
-                >
-                  <Icon className="w-3.5 h-3.5" strokeWidth={1.8} />
-                  {label}
-                </button>
-              ))}
-            </nav>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <span data-testid="admin-user-email" className="text-sm text-ash hidden md:inline">
-              {admin?.email}
-            </span>
-            <Button
-              onClick={logout}
-              data-testid="admin-logout-button"
-              variant="outline"
-              className="border-white/20 text-cloud hover:bg-white/5 rounded-lg h-9"
-            >
-              <LogOut className="w-4 h-4" /> Log Out
-            </Button>
-          </div>
-        </div>
-
-        {/* Mobile tab bar */}
-        <div className="sm:hidden flex border-t border-white/8">
-          {TABS.map(({ value, label, Icon }) => (
-            <button
-              key={value}
-              onClick={() => handleTabChange(value)}
-              className={`flex-1 flex flex-col items-center gap-1 py-2.5 text-xs transition-colors
-                          ${activeTab === value ? "text-cloud border-t-2 border-iris" : "text-fog"}`}
-            >
-              <Icon className="w-4 h-4" strokeWidth={1.8} />
-              {label}
-            </button>
-          ))}
-        </div>
-      </header>
-
-      {/* Tab content */}
-      <main className="max-w-6xl mx-auto px-6 py-8">
-        <AnimatePresence mode="wait">
-          {activeTab === "overview" && (
-            <OverviewTab
-              stats={stats}
-              statsLoading={statsLoading}
-              onTabChange={handleTabChange}
-            />
-          )}
-          {activeTab === "enquiries" && (
-            <motion.div key="enquiries" variants={tabVariants} initial="hidden" animate="show" exit="exit">
-              <div className="mb-6">
-                <h2 className="text-xl font-display font-light text-cloud">Enquiries</h2>
-                <p className="text-sm text-ash mt-1">Manage incoming leads and the CRM pipeline</p>
-              </div>
-              <EnquiriesCRM />
-            </motion.div>
-          )}
-          {activeTab === "projects" && <ProjectsTab />}
-        </AnimatePresence>
-      </main>
-    </div>
+    <AdminShell activeTab={activeTab} onSelectTab={handleTabChange}>
+      <AnimatePresence mode="wait">
+        {activeTab === "overview" && (
+          <OverviewTab
+            stats={stats}
+            statsLoading={statsLoading}
+            onTabChange={handleTabChange}
+          />
+        )}
+        {activeTab === "enquiries" && (
+          <motion.div key="enquiries" variants={tabVariants} initial="hidden" animate="show" exit="exit">
+            <div className="mb-6">
+              <h2 className="text-xl font-display font-light text-cloud">Enquiries & Leads</h2>
+              <p className="text-sm text-ash mt-1">Manage incoming leads and the CRM pipeline</p>
+            </div>
+            <EnquiriesCRM />
+          </motion.div>
+        )}
+        {activeTab === "projects" && <ProjectsTab />}
+      </AnimatePresence>
+    </AdminShell>
   );
 };
 
