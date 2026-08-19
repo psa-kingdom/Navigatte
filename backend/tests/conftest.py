@@ -47,6 +47,18 @@ def client():
         yield test_client
 
 
+@pytest.fixture(autouse=True)
+def reset_client_state(client):
+    """Resets client cookies and authorization headers before and after each test for test isolation."""
+    client.cookies.clear()
+    client.headers.pop("authorization", None)
+    client.headers.pop("Authorization", None)
+    yield
+    client.cookies.clear()
+    client.headers.pop("authorization", None)
+    client.headers.pop("Authorization", None)
+
+
 @pytest.fixture
 def test_admin_user():
     """Provides test admin user info and access token."""

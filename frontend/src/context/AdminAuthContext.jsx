@@ -3,8 +3,25 @@ import api from "@/lib/api";
 
 const AdminAuthContext = createContext(null);
 
-function formatApiErrorDetail(detail) {
-  if (detail == null) return "Something went wrong. Please try again.";
+function formatApiError(error) {
+  if (!error) return "Something went wrong. Please try again.";
+
+  // Handle network / CORS errors where browser blocks response access
+  if (!error.response) {
+    if (error.code === "ERR_NETWORK" || error.message?.includes("Network Error")) {
+      return "Network/CORS error: Unable to connect to backend server. Please verify backend deployment and CORS origin settings.";
+    }
+    return error.message || "Unable to connect to the server.";
+  }
+
+  const detail = error.response.data?.detail;
+  if (detail == null) {
+    if (error.response.status === 401) return "Invalid email or password.";
+    if (error.response.status === 403) return "Access forbidden.";
+    if (error.response.status === 429) return "Too many failed attempts. Account temporarily locked.";
+    if (error.response.status >= 500) return "Server error. Please try again later.";
+    return "Something went wrong. Please try again.";
+  }
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail)) {
     return detail
@@ -47,7 +64,7 @@ export const AdminAuthProvider = ({ children }) => {
     } catch (e) {
       return {
         success: false,
-        error: formatApiErrorDetail(e.response?.data?.detail) || e.message,
+        error: formatApiError(e),
       };
     }
   };

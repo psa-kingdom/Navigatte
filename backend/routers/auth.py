@@ -63,8 +63,21 @@ async def admin_login(
 
 @router.post("/logout")
 async def admin_logout(response: Response):
-    response.delete_cookie("access_token", path="/")
-    response.delete_cookie("refresh_token", path="/")
+    cookie_args = settings.cookie_kwargs()
+    response.delete_cookie(
+        "access_token",
+        path="/",
+        samesite=cookie_args.get("samesite"),
+        secure=cookie_args.get("secure"),
+        httponly=cookie_args.get("httponly", True),
+    )
+    response.delete_cookie(
+        "refresh_token",
+        path="/",
+        samesite=cookie_args.get("samesite"),
+        secure=cookie_args.get("secure"),
+        httponly=cookie_args.get("httponly", True),
+    )
     return {"message": "Logged out"}
 
 

@@ -30,6 +30,7 @@ const STATUS_OPTIONS = [
 
 const emptyForm = {
   title: "",
+  client_name: "",
   description: "",
   image_url: "",
   tags: [],
@@ -50,6 +51,7 @@ const ProjectFormDialog = ({ open, onOpenChange, project, onSaved, availableTags
     if (project) {
       setForm({
         title: project.title,
+        client_name: project.client_name || "",
         description: project.description,
         image_url: project.image_url,
         tags: project.tags || [],
@@ -75,6 +77,7 @@ const ProjectFormDialog = ({ open, onOpenChange, project, onSaved, availableTags
     const payload = { ...form, highlights: cleanHighlights };
     // Only include slug if non-empty
     if (!payload.slug) delete payload.slug;
+    if (!payload.client_name) delete payload.client_name;
     try {
       if (project) {
         await api.put(`/projects/${project.id}`, payload);
@@ -115,6 +118,18 @@ const ProjectFormDialog = ({ open, onOpenChange, project, onSaved, availableTags
               value={form.title}
               onChange={(e) => setForm({ ...form, title: e.target.value })}
               className="bg-obsidian border-white/10 text-cloud mt-1.5"
+            />
+          </div>
+
+          {/* Client Name */}
+          <div>
+            <Label className="text-ash text-xs">Client Name (Optional)</Label>
+            <Input
+              data-testid="project-form-client"
+              value={form.client_name}
+              onChange={(e) => setForm({ ...form, client_name: e.target.value })}
+              className="bg-obsidian border-white/10 text-cloud mt-1.5"
+              placeholder="e.g. Acme Corp, Global Logistics Inc."
             />
           </div>
 

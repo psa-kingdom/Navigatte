@@ -28,6 +28,7 @@ router = APIRouter(tags=["enquiries"])
 # ---------------------------------------------------------------------------
 
 @router.get("/admin/stats", response_model=Dict[str, Any])
+@router.get("/admin/overview", response_model=Dict[str, Any])
 async def admin_get_stats(
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncIOMotorDatabase = Depends(get_database),

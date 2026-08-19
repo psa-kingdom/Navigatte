@@ -33,6 +33,10 @@ class Settings:
     ADMIN_EMAIL: Optional[str] = os.getenv("ADMIN_EMAIL")
     ADMIN_PASSWORD: Optional[str] = os.getenv("ADMIN_PASSWORD")
 
+    # Cookie Settings
+    COOKIE_SAMESITE: Optional[str] = os.getenv("COOKIE_SAMESITE")
+    COOKIE_SECURE: Optional[str] = os.getenv("COOKIE_SECURE")
+
     @property
     def JWT_SECRET(self) -> str:
         if self._raw_jwt_secret:
@@ -49,27 +53,60 @@ class Settings:
     @property
     def CORS_ORIGINS(self) -> List[str]:
         raw = os.getenv("CORS_ORIGINS", "")
+        configured = []
         if raw:
             origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
             if "*" in origins:
                 logger.warning("CORS_ORIGINS contains '*' which is invalid with allow_credentials=True. Removing '*'.")
                 origins = [o for o in origins if o != "*"]
-            if origins:
-                return origins
+            configured = origins
 
-        # Default local origins
-        return [
+        # Standard known origins (local dev + production custom domains)
+        standard_origins = [
             "http://localhost:3000",
             "http://127.0.0.1:3000",
             "http://localhost:5173",
             "http://127.0.0.1:5173",
+            "https://navigatte.com",
+            "https://www.navigatte.com",
+            "https://navigatte-website.vercel.app",
         ]
 
+        # Combine configured + standard, deduplicating while preserving order
+        combined = list(dict.fromkeys(configured + standard_origins))
+        return combined
+
+    @property
+    def CORS_ORIGIN_REGEX(self) -> Optional[str]:
+        raw = os.getenv("CORS_ORIGIN_REGEX")
+        if raw is not None:
+            raw_clean = raw.strip()
+            return raw_clean if raw_clean else None
+        # Default scoped regex strictly for Navigatte Vercel preview deployments
+        # Matches:
+        #   https://navigatte-website-*.vercel.app within the psumanassociates-9980s-projects team namespace
+        #   https://navigatte-website-git-*.vercel.app
+        #   https://navigatte-*.vercel.app within the team namespace
+        return r"^https:\/\/(navigatte-website|navigatte)(-[a-z0-9-]+)?-psumanassociates-9980s-projects\.vercel\.app$"
+
     def cookie_kwargs(self) -> dict:
+        # For cross-site frontend-backend deployments (e.g. Vercel -> Railway over HTTPS),
+        # SameSite=None + Secure=True is required for browsers to accept and send session cookies.
+        # In local HTTP development, SameSite=Lax + Secure=False is used.
+        if self.COOKIE_SAMESITE:
+            samesite = self.COOKIE_SAMESITE.lower()
+        else:
+            samesite = "none" if self.IS_PRODUCTION else "lax"
+
+        if self.COOKIE_SECURE is not None:
+            secure = self.COOKIE_SECURE.lower() in ("true", "1")
+        else:
+            secure = True if self.IS_PRODUCTION or samesite == "none" else False
+
         return {
             "httponly": True,
-            "secure": self.IS_PRODUCTION,
-            "samesite": "lax",
+            "secure": secure,
+            "samesite": samesite,
             "path": "/",
         }
 
