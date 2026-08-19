@@ -1,24 +1,19 @@
-"""Backward-compatibility re-exports for models module."""
+"""Domain document models."""
 
 from models.base import BaseDocument, PyObjectId
 from models.admin import AdminUser
-from models.project import Project, ProjectStatus, ProjectSEO, PREDEFINED_TAGS
+from models.project import Project, ProjectStatus, ProjectSEO, PREDEFINED_TAGS, generate_slug
 from models.enquiry import Enquiry, EnquiryStatus, EnquiryNote
-from schemas.auth import LoginRequest, AdminUserPublic
-from schemas.project import ProjectCreate, ProjectUpdate
 
 __all__ = [
     "BaseDocument",
     "PyObjectId",
     "AdminUser",
-    "LoginRequest",
-    "AdminUserPublic",
     "Project",
     "ProjectStatus",
     "ProjectSEO",
-    "ProjectCreate",
-    "ProjectUpdate",
     "PREDEFINED_TAGS",
+    "generate_slug",
     "Enquiry",
     "EnquiryStatus",
     "EnquiryNote",

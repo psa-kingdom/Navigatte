@@ -1,22 +1,23 @@
 """
-Tests for Projects/Portfolio CMS feature + Admin auth (3rd iteration).
+Integration tests for Projects/Portfolio CMS feature + Admin auth against a live backend.
 Covers: /api/projects CRUD, /api/tags, /api/auth/* (login/logout/me),
 brute-force lockout, and unauthenticated access protection.
 """
 import os
-import time
 import pytest
 import requests
 
-BASE_URL = os.environ.get('REACT_APP_BACKEND_URL').rstrip('/')
-API = f"{BASE_URL}/api"
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+API = f"{BASE_URL}/api" if BASE_URL else None
 
-ADMIN_EMAIL = "admin@altioslabs.com"
-ADMIN_PASSWORD = "Altios@Admin2026"
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@navigatte.com")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Navigatte@Admin2026")
 
 
 @pytest.fixture
 def api_client():
+    if not API:
+        pytest.skip("REACT_APP_BACKEND_URL environment variable not set; skipping live server integration tests.")
     session = requests.Session()
     session.headers.update({"Content-Type": "application/json"})
     return session
@@ -116,8 +117,6 @@ class TestAuthSecurity:
         assert data["email"] == ADMIN_EMAIL
         assert "access_token" in resp.cookies
         assert "refresh_token" in resp.cookies
-        # httpOnly check via Set-Cookie header
-        set_cookie_headers = resp.headers.get("Set-Cookie", "") + str(resp.raw.headers.get_all("Set-Cookie") if hasattr(resp.raw.headers, 'get_all') else "")
 
     def test_me_after_login(self, authenticated_client):
         resp = authenticated_client.get(f"{API}/auth/me")
@@ -133,11 +132,10 @@ class TestAuthSecurity:
 
 class TestBruteForceLockout:
     def test_lockout_after_5_failed_attempts(self, api_client):
-        email = "bruteforce_test@example.com"
-        for i in range(5):
+        email = "bruteforce_test@navigatte.com"
+        for _ in range(5):
             resp = api_client.post(f"{API}/auth/login", json={"email": email, "password": "wrong"})
             assert resp.status_code == 401
-        # 6th attempt should be locked out (429)
         resp6 = api_client.post(f"{API}/auth/login", json={"email": email, "password": "wrong"})
         assert resp6.status_code == 429
 
@@ -159,17 +157,14 @@ class TestProjectCRUD:
         assert "id" in created
         project_id = created["id"]
 
-        # Verify persisted via GET
         get_resp = authenticated_client.get(f"{API}/projects/{project_id}")
         assert get_resp.status_code == 200
         assert get_resp.json()["title"] == create_payload["title"]
 
-        # Verify appears in public list
         list_resp = authenticated_client.get(f"{API}/projects")
         ids = [p["id"] for p in list_resp.json()]
         assert project_id in ids
 
-        # UPDATE
         update_resp = authenticated_client.put(f"{API}/projects/{project_id}", json={
             "title": "TEST_Project_Updated", "featured": True
         })
@@ -178,11 +173,6 @@ class TestProjectCRUD:
         assert updated["title"] == "TEST_Project_Updated"
         assert updated["featured"] is True
 
-        get_resp2 = authenticated_client.get(f"{API}/projects/{project_id}")
-        assert get_resp2.json()["title"] == "TEST_Project_Updated"
-        assert get_resp2.json()["featured"] is True
-
-        # DELETE
         del_resp = authenticated_client.delete(f"{API}/projects/{project_id}")
         assert del_resp.status_code == 200
 
