@@ -43,6 +43,12 @@ class Settings:
     CAL_EVENT_TYPE_ID: Optional[str] = os.getenv("CAL_EVENT_TYPE_ID")
     CAL_WEBHOOK_SUBSCRIBER_URL: Optional[str] = os.getenv("CAL_WEBHOOK_SUBSCRIBER_URL")
 
+    # Resend Communications Integration
+    RESEND_ENABLED: bool = os.getenv("RESEND_ENABLED", "false").lower() in ("true", "1", "yes")
+    RESEND_API_KEY: Optional[str] = os.getenv("RESEND_API_KEY")
+    RESEND_FROM_EMAIL: str = os.getenv("RESEND_FROM_EMAIL", "Navigatte <updates@updates.navigatte.com>")
+    RESEND_WEBHOOK_SECRET: Optional[str] = os.getenv("RESEND_WEBHOOK_SECRET")
+
     @property
     def CAL_API_KEY(self) -> Optional[str]:
         return (

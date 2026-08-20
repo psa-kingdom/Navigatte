@@ -53,6 +53,14 @@ async def get_integrations_status(
             "subscriber_url": settings.CAL_WEBHOOK_SUBSCRIBER_URL,
             "event_type_id": settings.CAL_EVENT_TYPE_ID,
         },
+        "resend": {
+            "name": "Resend",
+            "enabled": settings.RESEND_ENABLED,
+            "has_api_key": bool(settings.RESEND_API_KEY),
+            "has_webhook_secret": bool(settings.RESEND_WEBHOOK_SECRET),
+            "from_email": settings.RESEND_FROM_EMAIL,
+            "sending_domain": "updates.navigatte.com",
+        },
         "stats": {
             "total_events_received": total_events,
             "failed_events": failed_events,

@@ -90,9 +90,20 @@ The platform is deployed as a decoupled monorepo:
 - **Header Trigger (`AdminSearchTrigger.jsx`)**:
   - Responsive search trigger integrated into `AdminShell.jsx` (desktop shortcut badge and mobile icon trigger).
 
+### G. Communications Provider Boundary & Resend Architecture (Phase 3 Foundation)
+- **Generic Communications Contract (`integrations/contracts/communications.py`)**:
+  - `CommunicationsProvider` ABC with `send_email`, `verify_webhook_signature`, and `normalize_webhook`.
+  - Normalized domain data classes: `EmailMessage`, `EmailRecipient`, `EmailDeliveryResult`, `CommunicationWebhookEvent`, `CommunicationEventType`.
+  - Guarantees zero tight coupling between CRM and vendor-specific email services.
+- **Resend Adapter (`integrations/resend/`)**:
+  - `ResendCommunicationsProvider`: Concrete adapter calling Resend API v1 using standard library / `httpx` (zero additional external packages).
+  - `verifier.py`: Svix HMAC-SHA256 signature verification computed on raw request bytes.
+  - `mapper.py`: Normalizes Resend delivery events (`email.sent`, `email.delivered`, `email.bounced`, `email.complained`, `email.opened`, `email.clicked`).
+  - `client.py`: High-performance asynchronous REST client.
+
 ---
 
-## 5. Master Roadmap & Dependency Hierarchy
+## 5. Master Roadmap & Priority Hierarchy
 
 ```
 PHASE 1: Foundation (COMPLETE)
@@ -117,27 +128,29 @@ PHASE 2C: Scheduling Integration & Provider Abstraction (COMPLETE)
 ├── Public "Book A Call" Lead Qualification Modal Flow (BookCallModal)
 └── Admin Profile Dropdown Component (AdminProfileDropdown)
 
-PHASE 2B: Admin UX Evolution (IN PROGRESS)
-├── [Task A] Global Admin Action/Search Bar (COMPLETE — GlobalAdminSearch & GET /api/admin/search)
-├── [Task B] Restrained Flow Field Background System (PLANNED)
-│   └── Dependencies: foreground contrast audit, prefers-reduced-motion support
-├── [Task C] Bento-Grid Command Center (PLANNED)
-│   └── Dependencies: Phase 2A metrics, modular card components
-└── [Task D] Spotlight Module Cards (PLANNED)
-    └── Dependencies: Bento layout, design token alignment
+PHASE 2B: Admin UX & Design System Evolution (IN PROGRESS)
+├── [P1 / Task A] Global Admin Action/Search Bar (COMPLETE — GlobalAdminSearch & GET /api/admin/search)
+├── [P2 / Task B] Dual-Theme Design Token System (NEXT FOUNDATION)
+│   └── High-contrast Dark Obsidian & Editorial Light semantic CSS custom properties
+├── [P3 / Task C] Restrained Flow Field Background System (PLANNED)
+│   └── Dependencies: Task B Theme Tokens, foreground contrast audit, prefers-reduced-motion
+├── [P3 / Task D] Bento-Grid Command Center (PLANNED)
+│   └── Dependencies: Task B Theme Tokens, Phase 2A metrics, modular card components
+└── [P3 / Task E] Spotlight Module Cards (PLANNED)
+    └── Dependencies: Task D Bento layout, design token alignment
 
-PHASE 3: Communications Studio & Email Delivery (DEFERRED / NOT STARTED)
-├── Resend Provider Adapter & Delivery Service
-├── Email Template Engine & Campaign Outbox
-├── Webhook Processor (Delivery, Bounce, Open tracking)
-└── Audience & Subscriber Management
+PHASE 3: Communications Studio & Email Engine (FOUNDATION ESTABLISHED)
+├── [P1] Communications Provider Contract & Resend Adapter (COMPLETE — zero new deps)
+├── [P3] Email Template Engine & Transactional Outbox (PLANNED)
+├── [P3] Webhook Ingestion Router & Delivery Tracking (PLANNED)
+└── [P4] Audience & Subscriber Campaign Management (PLANNED)
 ```
 
 ---
 
 ## 6. Verification Summary
 
-- **Backend Pytest Suite**: **42 passed / 0 failed / 19 skipped** (100% pass rate across auth, security, projects, enquiries, CORS, Cal.com webhooks, qualification flows, startup isolation, and global search).
+- **Backend Pytest Suite**: **46 passed / 0 failed / 19 skipped** (100% pass rate across auth, security, projects, enquiries, CORS, Cal.com webhooks, qualification flows, startup isolation, global search, and Resend provider boundary).
 - **Frontend Build**: **Compiled successfully** (`npx craco build` — 0 errors, 0 warnings, 381.61 kB gzipped JS).
-- **Deployment Smoke Test**: **PASS** (CORS preflights, authenticated session flows, and webhook ingestion).
+- **Deployment Smoke Test**: **PASS** (CORS preflights, authenticated session flows, search endpoints, and webhook ingestion).
 - **Git State**: Clean working tree on `main` branch, synced with `origin/main` and `origin/test`.
