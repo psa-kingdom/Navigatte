@@ -86,6 +86,28 @@ async def submit_enquiry(
     await db.enquiries.insert_one(enquiry.to_mongo())
 
     logger.info(f"New enquiry received from {payload.name} ({payload.email})")
+
+    # Automatically queue transactional enquiry acknowledgement email for real prospects
+    if not enquiry.is_test and not payload.email.lower().startswith("rca_verification_test@"):
+        try:
+            from services.communications_service import CommunicationsService
+            comm_service = CommunicationsService()
+            await comm_service.send_transactional_email(
+                db=db,
+                template_key="enquiry_acknowledgement",
+                recipient_email=enquiry.email,
+                recipient_name=enquiry.name,
+                variables={
+                    "name": enquiry.name,
+                    "service_interest": enquiry.service_interest or "General Technology Advisory",
+                    "company": enquiry.company or "",
+                },
+                enquiry_id=enquiry.id,
+                idempotency_key=f"email:enquiry_acknowledgement:{enquiry.id}",
+            )
+        except Exception as email_err:
+            logger.warning(f"Failed to queue enquiry acknowledgement email for {enquiry.email}: {email_err}")
+
     return EnquiryPublicResponse()
 
 

@@ -120,13 +120,16 @@ The platform is deployed as a decoupled monorepo:
 ### J. Communications Studio & Outbox Engine (Phase 3 Complete)
 - **Database & Domain Models (`models/communications.py`)**:
   - `EmailTemplateModel`: System templates with variable schemas (`enquiry_acknowledgement`, `consultation_booking_confirmation`, `consultation_rescheduled`, `consultation_cancelled`).
-  - `OutboxItemModel`: Durable outbox records with status progression (`queued`, `sending`, `sent`, `delivered`, `bounced`, `failed`, `opened`, `clicked`).
-- **Transactional Dispatch & Inbound Webhooks (`services/communications_service.py`)**:
-  - `send_transactional_email`: Queues outbox item, renders variables, dispatches via `ResendCommunicationsProvider`, and correlates with CRM Enquiry timeline.
-  - `process_resend_webhook`: Ingests Svix-signed Resend delivery events (`email.delivered`, `email.bounced`, `email.opened`), updates Outbox status, and appends concise timeline activities to matched leads.
+  - `OutboxItemModel`: Durable outbox records with status progression (`queued`, `sending`, `sent`, `delivered`, `bounced`, `failed`, `opened`, `clicked`), `attempt_count`, `last_error`, `next_attempt_at`, and idempotency keys.
+- **Automatic Transactional Triggers & Inbound Webhooks (`services/communications_service.py` & `routers/enquiries.py` & `services/scheduling_service.py`)**:
+  - **Public Lead Intake**: Real prospect submissions to `POST /api/enquiries` automatically queue `enquiry_acknowledgement` emails while preserving CRM enquiry creation on email provider failure.
+  - **Cal.com Lifecycle**: `BOOKING_CREATED`, `BOOKING_RESCHEDULED`, and `BOOKING_CANCELLED` automatically dispatch normalized confirmation/notice emails to attendees with zero duplication on webhook retries.
+  - **Bot & Test Guarding**: Honeypot bot submissions and `is_test: true` / diagnostic leads never trigger real email dispatches.
+  - **Resend Webhooks**: Ingests Svix-signed Resend delivery events (`email.delivered`, `email.bounced`, `email.opened`), updates Outbox status, and appends concise timeline activities to matched leads.
 - **Admin Communications Centre UI (`CommunicationsCentre.jsx`)**:
   - Overview KPI metrics (Total Dispatches, Delivery Rate, Open Rate, Bounces).
-  - Outbox inspection table with search, status filtering, and rendered HTML preview modal.
+  - Outbox inspection table with search, status filtering, attempt tracking, and rendered HTML preview modal.
+  - Manual retry action (`POST /api/admin/communications/outbox/{id}/retry`) for failed/queued dispatches.
   - Template library with variable schemas.
   - Direct live test email sender (`POST /api/admin/communications/send-test`).
 
@@ -166,6 +169,8 @@ PHASE 2B: Admin UX & Control Centre Evolution (COMPLETE)
 PHASE 3: Communications Studio & Email Engine (COMPLETE)
 ├── [P1] Communications Provider Contract & Resend Adapter (COMPLETE — commit a5366ea)
 ├── [P1] Transactional Outbox & Template Library (COMPLETE — CommunicationsService)
+├── [P1] Automatic System Email Triggers (Enquiry intake, Booking created/rescheduled/cancelled) (COMPLETE)
+├── [P1] Durable Outbox Retry Engine & Diagnostics (COMPLETE — POST /outbox/{id}/retry)
 ├── [P1] Resend Inbound Webhook Ingestion & Delivery Tracking (COMPLETE — POST /api/webhooks/resend)
 ├── [P1] CRM ↔ Communications Activity Timeline Sync (COMPLETE)
 └── [P1] Communications Studio Admin UI (COMPLETE — CommunicationsCentre.jsx)
@@ -182,7 +187,7 @@ PHASE: UI/UX + VISUAL DESIGN SYSTEM (EXPLICITLY DEFERRED / FUTURE PHASE)
 
 ## 6. Verification Summary
 
-- **Backend Pytest Suite**: **55 passed / 0 failed / 19 skipped** (100% pass rate across auth, security, projects, enquiries, CORS, Cal.com webhooks, qualification flows, startup isolation, global search, Resend adapter, system health, and communications outbox engine).
-- **Frontend Build**: **Compiled successfully** (`npx craco build` — 0 errors, 0 warnings, 392.33 kB gzipped JS).
+- **Backend Pytest Suite**: **59 passed / 0 failed / 19 skipped** (100% pass rate across auth, security, projects, enquiries, CORS, Cal.com webhooks, qualification flows, startup isolation, global search, Resend adapter, system health, automatic email triggers, and outbox retry engine).
+- **Frontend Build**: **Compiled successfully** (`npx craco build` — 0 errors, 0 warnings, 392.55 kB gzipped JS).
 - **Deployment Smoke Test**: **PASS** (CORS preflights, authenticated session flows, search endpoints, communications overview, and webhook ingestion).
 - **Git State**: Clean working tree on `main` branch, synced with `origin/main` and `origin/test`.

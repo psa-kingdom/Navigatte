@@ -162,11 +162,25 @@ class HealthService:
             documentation_url="https://resend.com/docs",
         )
 
+        # Query Outbox and Webhook stats from DB
+        pending_count = await db.email_outbox.count_documents({"status": {"$in": ["queued", "sending"]}})
+        failed_count = await db.email_outbox.count_documents({"status": "failed"})
+        delivered_count = await db.email_outbox.count_documents({"status": {"$in": ["delivered", "opened", "clicked"]}})
+        last_event_docs = await db.integration_webhook_events.find({"provider": "resend"}).sort("received_at", -1).limit(1).to_list(1)
+
+        if last_event_docs:
+            record.last_event_at = last_event_docs[0].get("received_at")
+            if last_event_docs[0].get("processing_status") == "processed":
+                record.last_success_at = last_event_docs[0].get("received_at")
+
         record.metadata = {
             "has_api_key": has_api_key,
             "has_webhook_secret": has_webhook_secret,
             "sending_domain": "updates.navigatte.com",
             "from_email": settings.RESEND_FROM_EMAIL,
+            "pending_outbox_count": pending_count,
+            "failed_deliveries_count": failed_count,
+            "delivered_count": delivered_count,
         }
 
         if not has_api_key:

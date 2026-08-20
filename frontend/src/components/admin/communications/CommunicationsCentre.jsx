@@ -143,6 +143,37 @@ export const CommunicationsCentre = () => {
     }
   };
 
+  const [retryingItem, setRetryingItem] = useState(false);
+
+  const handleRetryOutbox = async (outboxId) => {
+    setRetryingItem(true);
+    try {
+      const resp = await api.post(`/admin/communications/outbox/${outboxId}/retry`);
+      if (resp.data.success) {
+        toast({
+          title: "Retry Dispatched",
+          description: `Message ${outboxId} queued/sent (Attempt #${resp.data.attempt_count}).`,
+        });
+        setSelectedOutbox(null);
+        reloadAll();
+      } else {
+        toast({
+          variant: "destructive",
+          title: "Retry Failed",
+          description: resp.data.error_message || "Retry failed.",
+        });
+      }
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Retry Error",
+        description: err.response?.data?.detail || err.message,
+      });
+    } finally {
+      setRetryingItem(false);
+    }
+  };
+
   const metrics = overview?.metrics || {};
   const provider = overview?.provider || {};
 
@@ -529,9 +560,16 @@ export const CommunicationsCentre = () => {
                   <span className="font-mono text-[11px] text-iris">{selectedOutbox.provider_message_id}</span>
                 </div>
               )}
+              <div className="flex items-center justify-between">
+                <span className="text-fog">Attempts:</span>
+                <span className="font-mono text-[11px] text-cloud">
+                  {selectedOutbox.attempt_count || 1} / {selectedOutbox.max_attempts || 3}
+                </span>
+              </div>
               {selectedOutbox.error_message && (
                 <div className="p-2 bg-rose-500/10 border border-rose-500/20 rounded text-rose-300 font-mono text-[11px]">
-                  {selectedOutbox.error_message}
+                  <p className="font-semibold text-[10px] uppercase text-rose-400">Failure Reason:</p>
+                  <p className="mt-0.5">{selectedOutbox.error_message}</p>
                 </div>
               )}
             </div>
@@ -539,12 +577,24 @@ export const CommunicationsCentre = () => {
             <div className="pt-2">
               <p className="text-xs font-semibold text-fog mb-1">Rendered HTML Body:</p>
               <div
-                className="p-3 bg-white/5 border border-white/10 rounded-lg max-h-48 overflow-y-auto text-xs text-cloud"
+                className="p-3 bg-white/5 border border-white/10 rounded-lg max-h-48 overflow-y-auto text-xs text-cloud font-mono text-[11px]"
                 dangerouslySetInnerHTML={{ __html: selectedOutbox.body_html }}
               />
             </div>
 
-            <div className="pt-3 border-t border-white/10 flex justify-end">
+            <div className="pt-3 border-t border-white/10 flex items-center justify-between gap-2">
+              {["failed", "queued", "sending"].includes(selectedOutbox.status) && (
+                <Button
+                  onClick={() => handleRetryOutbox(selectedOutbox.id)}
+                  disabled={retryingItem}
+                  size="sm"
+                  className="bg-iris/80 hover:bg-iris text-white text-xs h-8"
+                >
+                  {retryingItem ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
+                  Retry Dispatch
+                </Button>
+              )}
+              <div className="flex-1" />
               <Button
                 variant="outline"
                 size="sm"

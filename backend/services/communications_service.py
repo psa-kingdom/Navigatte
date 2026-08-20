@@ -160,6 +160,7 @@ class CommunicationsService:
             status=OutboxStatus.SENDING,
             provider=self.provider.name,
             enquiry_id=enquiry_id,
+            attempt_count=1,
             metadata=vars_dict,
         )
         await db.email_outbox.insert_one(outbox_item.to_mongo())
@@ -182,12 +183,15 @@ class CommunicationsService:
             outbox_item.status = OutboxStatus.SENT
             outbox_item.provider_message_id = result.message_id
             outbox_item.sent_at = result.sent_at
+            outbox_item.last_error = None
         elif result.status == "disabled":
             outbox_item.status = OutboxStatus.QUEUED
             outbox_item.error_message = "Provider disabled or not configured."
+            outbox_item.last_error = "Provider credentials missing"
         else:
             outbox_item.status = OutboxStatus.FAILED
             outbox_item.error_message = result.error
+            outbox_item.last_error = result.error
 
         outbox_item.updated_at = datetime.now(timezone.utc)
         await db.email_outbox.update_one(
@@ -197,6 +201,8 @@ class CommunicationsService:
                 "provider_message_id": outbox_item.provider_message_id,
                 "sent_at": outbox_item.sent_at,
                 "error_message": outbox_item.error_message,
+                "attempt_count": outbox_item.attempt_count,
+                "last_error": outbox_item.last_error,
                 "updated_at": outbox_item.updated_at,
             }}
         )
@@ -214,6 +220,59 @@ class CommunicationsService:
                 {"_id": enquiry_id},
                 {"$push": {"activities": activity.model_dump()}}
             )
+
+        return outbox_item
+
+    async def retry_outbox_item(
+        self,
+        db: AsyncIOMotorDatabase,
+        outbox_id: str,
+    ) -> OutboxItemModel:
+        """Manually retries a queued or failed outbox item."""
+        doc = await db.email_outbox.find_one({"_id": outbox_id})
+        if not doc:
+            raise ValueError(f"Outbox item {outbox_id} not found.")
+
+        outbox_item = OutboxItemModel.from_mongo(doc)
+        now = datetime.now(timezone.utc)
+
+        msg = EmailMessage(
+            to=[EmailRecipient(email=outbox_item.recipient_email, name=outbox_item.recipient_name)],
+            subject=outbox_item.subject,
+            html_body=outbox_item.body_html,
+            text_body=outbox_item.body_text,
+            from_email=outbox_item.from_email,
+            idempotency_key=f"{outbox_item.idempotency_key}:retry:{outbox_item.attempt_count + 1}",
+            tags={"template_key": outbox_item.template_key or "custom", "enquiry_id": str(outbox_item.enquiry_id or "")},
+        )
+
+        result = await self.provider.send_email(msg)
+        outbox_item.attempt_count += 1
+        outbox_item.updated_at = now
+
+        if result.status == "sent":
+            outbox_item.status = OutboxStatus.SENT
+            outbox_item.provider_message_id = result.message_id
+            outbox_item.sent_at = result.sent_at
+            outbox_item.error_message = None
+            outbox_item.last_error = None
+        else:
+            outbox_item.status = OutboxStatus.FAILED
+            outbox_item.error_message = result.error
+            outbox_item.last_error = result.error
+
+        await db.email_outbox.update_one(
+            {"_id": outbox_item.id},
+            {"$set": {
+                "status": outbox_item.status.value,
+                "provider_message_id": outbox_item.provider_message_id,
+                "sent_at": outbox_item.sent_at,
+                "error_message": outbox_item.error_message,
+                "attempt_count": outbox_item.attempt_count,
+                "last_error": outbox_item.last_error,
+                "updated_at": outbox_item.updated_at,
+            }}
+        )
 
         return outbox_item
 

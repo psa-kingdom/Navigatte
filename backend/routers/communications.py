@@ -151,6 +151,32 @@ async def update_template(
     return {"success": True, "key": key}
 
 
+@router.post("/outbox/{outbox_id}/retry")
+async def retry_outbox_message(
+    outbox_id: str,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Manually retries a queued or failed outbox email message."""
+    service = CommunicationsService()
+    try:
+        item = await service.retry_outbox_item(db=db, outbox_id=outbox_id)
+        return {
+            "success": item.status in (OutboxStatus.SENT, OutboxStatus.DELIVERED),
+            "status": item.status.value,
+            "outbox_id": item.id,
+            "attempt_count": item.attempt_count,
+            "provider_message_id": item.provider_message_id,
+            "error_message": item.error_message,
+        }
+    except Exception as e:
+        logger.error(f"Failed to retry outbox item {outbox_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
 @router.post("/send-test")
 async def send_test_email(
     payload: SendTestEmailRequest,

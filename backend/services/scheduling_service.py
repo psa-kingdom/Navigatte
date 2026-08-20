@@ -293,6 +293,68 @@ class SchedulingService:
                 },
             )
 
+        # 5. Automatically trigger transactional emails for real prospect bookings
+        is_test_enquiry = bool(getattr(enquiry, "is_test", False)) or normalized_email.startswith("rca_verification_test@")
+        if not is_test_enquiry and enquiry and event.attendee and event.attendee.email:
+            try:
+                from services.communications_service import CommunicationsService
+                comm_service = CommunicationsService()
+
+                # Format scheduled start time
+                formatted_start = (
+                    meeting.start_at.strftime("%b %d, %Y, %I:%M %p")
+                    if meeting and meeting.start_at
+                    else "Scheduled Consultation Time"
+                )
+
+                if event.event_type == SchedulingEventType.BOOKING_CREATED:
+                    await comm_service.send_transactional_email(
+                        db=db,
+                        template_key="consultation_booking_confirmation",
+                        recipient_email=event.attendee.email,
+                        recipient_name=event.attendee.name,
+                        variables={
+                            "name": event.attendee.name or "Valued Client",
+                            "start_time": formatted_start,
+                            "timezone": meeting.time_zone if meeting else "UTC",
+                            "meeting_url": (meeting.meeting_url if meeting else "") or "https://navigatte.com",
+                            "title": (meeting.title if meeting else "Technical Strategy Consultation"),
+                        },
+                        enquiry_id=enquiry.id,
+                        idempotency_key=f"email:booking_created:{event.external_booking_uid}",
+                    )
+                elif event.event_type == SchedulingEventType.BOOKING_RESCHEDULED:
+                    await comm_service.send_transactional_email(
+                        db=db,
+                        template_key="consultation_rescheduled",
+                        recipient_email=event.attendee.email,
+                        recipient_name=event.attendee.name,
+                        variables={
+                            "name": event.attendee.name or "Valued Client",
+                            "start_time": formatted_start,
+                            "timezone": meeting.time_zone if meeting else "UTC",
+                            "meeting_url": (meeting.meeting_url if meeting else "") or "https://navigatte.com",
+                            "title": (meeting.title if meeting else "Technical Strategy Consultation"),
+                        },
+                        enquiry_id=enquiry.id,
+                        idempotency_key=f"email:booking_rescheduled:{event.external_booking_uid}:{int(meeting.start_at.timestamp() if meeting and meeting.start_at else 0)}",
+                    )
+                elif event.event_type in (SchedulingEventType.BOOKING_CANCELLED, SchedulingEventType.BOOKING_REJECTED):
+                    await comm_service.send_transactional_email(
+                        db=db,
+                        template_key="consultation_cancelled",
+                        recipient_email=event.attendee.email,
+                        recipient_name=event.attendee.name,
+                        variables={
+                            "name": event.attendee.name or "Valued Client",
+                            "title": (meeting.title if meeting else "Technical Strategy Consultation"),
+                        },
+                        enquiry_id=enquiry.id,
+                        idempotency_key=f"email:booking_cancelled:{event.external_booking_uid}",
+                    )
+            except Exception as email_err:
+                logger.warning(f"Failed to queue scheduling transactional email: {email_err}")
+
         return enquiry, {
             "status": "processed",
             "enquiry_id": enquiry.id,

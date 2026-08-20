@@ -167,3 +167,175 @@ async def test_resend_webhook_ingestion_and_crm_timeline(client, monkeypatch):
     dup_resp = client.post("/api/webhooks/resend", data=raw_body, headers=headers)
     assert dup_resp.status_code == 200
     assert dup_resp.json()["status"] == "already_processed"
+
+
+@pytest.mark.asyncio
+async def test_public_enquiry_automatic_acknowledgement_dispatch(client):
+    """Submitting a real prospect enquiry automatically queues an enquiry_acknowledgement email."""
+    from core.database import get_database
+
+    db = get_database()
+    initial_count = await db.email_outbox.count_documents({"template_key": "enquiry_acknowledgement"})
+
+    payload = {
+        "name": "Marcus Vance",
+        "email": "marcus.vance@vancetech.com",
+        "company": "Vance Technology",
+        "service_interest": "Cloud & AI Modernization",
+        "message": "We would like to consult on enterprise architecture.",
+    }
+    resp = client.post("/api/enquiries", json=payload)
+    assert resp.status_code == 200
+
+    # Verify outbox item created
+    final_count = await db.email_outbox.count_documents({"template_key": "enquiry_acknowledgement"})
+    assert final_count == initial_count + 1
+
+    item = await db.email_outbox.find_one({"recipient_email": "marcus.vance@vancetech.com"})
+    assert item is not None
+    assert item["template_key"] == "enquiry_acknowledgement"
+    assert "Marcus Vance" in item["subject"] or "Thank you" in item["subject"] or "Navigatte" in item["subject"]
+
+
+@pytest.mark.asyncio
+async def test_honeypot_and_diagnostic_leads_skip_email(client):
+    """Honeypot spam submissions and diagnostic test leads never receive outbound emails."""
+    from core.database import get_database
+
+    db = get_database()
+    initial_count = await db.email_outbox.count_documents({})
+
+    # 1. Honeypot spam submission
+    hp_payload = {
+        "name": "Spam Bot",
+        "email": "spambot@spammer.org",
+        "message": "Buy cheap stuff",
+        "website_hp": "http://spam.org",
+    }
+    resp1 = client.post("/api/enquiries", json=hp_payload)
+    assert resp1.status_code == 200
+
+    # 2. Diagnostic test lead submission
+    test_payload = {
+        "name": "Test RCA Diagnostic",
+        "email": "rca_verification_test@navigatte.internal",
+        "message": "Automated system test probe",
+    }
+    resp2 = client.post("/api/enquiries", json=test_payload)
+    assert resp2.status_code == 200
+
+    # Verify no new outbox items were created for either submission
+    final_count = await db.email_outbox.count_documents({})
+    assert final_count == initial_count
+
+
+@pytest.mark.asyncio
+async def test_cal_booking_lifecycle_automatic_emails(client, monkeypatch):
+    """Cal.com booking webhooks trigger booking confirmation, reschedule, and cancellation emails."""
+    from core.database import get_database
+
+    db = get_database()
+    secret = "test_cal_comm_secret_key"
+    monkeypatch.setattr("core.config.settings.CAL_WEBHOOK_SECRET", secret)
+
+    def sign_payload(payload_dict):
+        raw = json.dumps(payload_dict).encode("utf-8")
+        sig = hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+        return raw, {"x-cal-signature-256": sig, "content-type": "application/json"}
+
+    # 1. BOOKING_CREATED
+    booking_created_payload = {
+        "triggerEvent": "BOOKING_CREATED",
+        "createdAt": "2026-08-20T10:00:00.000Z",
+        "payload": {
+            "uid": "booking_comm_001",
+            "title": "Strategy Architecture Consultation",
+            "startTime": "2026-08-25T14:00:00.000Z",
+            "endTime": "2026-08-25T14:45:00.000Z",
+            "metadata": {"videoCallUrl": "https://cal.com/meet/test001"},
+            "responses": {
+                "name": {"value": "Liam Gallagher"},
+                "email": {"value": "liam.gallagher@oasis-corp.co.uk"},
+            },
+        },
+    }
+    raw, headers = sign_payload(booking_created_payload)
+    resp = client.post("/api/webhooks/cal", data=raw, headers=headers)
+    assert resp.status_code == 200
+
+    # Verify confirmation email queued in outbox
+    conf_item = await db.email_outbox.find_one({"recipient_email": "liam.gallagher@oasis-corp.co.uk", "template_key": "consultation_booking_confirmation"})
+    assert conf_item is not None
+    assert "Liam Gallagher" in conf_item["body_html"]
+
+    # 2. BOOKING_RESCHEDULED
+    booking_resched_payload = {
+        "triggerEvent": "BOOKING_RESCHEDULED",
+        "createdAt": "2026-08-20T11:00:00.000Z",
+        "payload": {
+            "uid": "booking_comm_001",
+            "title": "Strategy Architecture Consultation",
+            "startTime": "2026-08-26T15:00:00.000Z",
+            "endTime": "2026-08-26T15:45:00.000Z",
+            "metadata": {"videoCallUrl": "https://cal.com/meet/test001"},
+            "responses": {
+                "name": {"value": "Liam Gallagher"},
+                "email": {"value": "liam.gallagher@oasis-corp.co.uk"},
+            },
+        },
+    }
+    raw, headers = sign_payload(booking_resched_payload)
+    resp2 = client.post("/api/webhooks/cal", data=raw, headers=headers)
+    assert resp2.status_code == 200
+
+    resched_item = await db.email_outbox.find_one({"recipient_email": "liam.gallagher@oasis-corp.co.uk", "template_key": "consultation_rescheduled"})
+    assert resched_item is not None
+
+    # 3. BOOKING_CANCELLED
+    booking_cancel_payload = {
+        "triggerEvent": "BOOKING_CANCELLED",
+        "createdAt": "2026-08-20T12:00:00.000Z",
+        "payload": {
+            "uid": "booking_comm_001",
+            "title": "Strategy Architecture Consultation",
+            "startTime": "2026-08-26T15:00:00.000Z",
+            "endTime": "2026-08-26T15:45:00.000Z",
+            "cancellationReason": "Client schedule conflict",
+            "responses": {
+                "name": {"value": "Liam Gallagher"},
+                "email": {"value": "liam.gallagher@oasis-corp.co.uk"},
+            },
+        },
+    }
+    raw, headers = sign_payload(booking_cancel_payload)
+    resp3 = client.post("/api/webhooks/cal", data=raw, headers=headers)
+    assert resp3.status_code == 200
+
+    cancel_item = await db.email_outbox.find_one({"recipient_email": "liam.gallagher@oasis-corp.co.uk", "template_key": "consultation_cancelled"})
+    assert cancel_item is not None
+
+
+@pytest.mark.asyncio
+async def test_outbox_retry_endpoint(client, auth_headers):
+    """Admin can retry a failed outbox email item."""
+    from core.database import get_database
+    from models.communications import OutboxItemModel
+
+    db = get_database()
+    failed_item = OutboxItemModel(
+        idempotency_key="test:manual:retry:001",
+        recipient_email="retry.test@client.com",
+        recipient_name="Retry Client",
+        subject="Retry Test Subject",
+        body_html="<p>Test retry content</p>",
+        status=OutboxStatus.FAILED,
+        error_message="Simulated connection timeout",
+        attempt_count=1,
+    )
+    await db.email_outbox.insert_one(failed_item.to_mongo())
+
+    resp = client.post(f"/api/admin/communications/outbox/{failed_item.id}/retry", headers=auth_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["attempt_count"] == 2
+    assert data["outbox_id"] == failed_item.id

@@ -73,8 +73,27 @@ def map_cal_webhook_to_event(
     elif isinstance(inner.get("attendee"), dict):
         primary_attendee = inner.get("attendee")
 
-    attendee_name = str(primary_attendee.get("name") or inner.get("name") or "Prospective Client").strip()
-    raw_email = primary_attendee.get("email") or inner.get("email") or "unknown@prospect.navigatte.com"
+    attendee_name = str(primary_attendee.get("name") or inner.get("name") or "").strip()
+    raw_email = primary_attendee.get("email") or inner.get("email") or ""
+
+    # Check responses object if name/email not directly in attendees
+    responses = inner.get("responses") or {}
+    if isinstance(responses, dict):
+        if not raw_email:
+            email_resp = responses.get("email")
+            if isinstance(email_resp, dict):
+                raw_email = email_resp.get("value") or ""
+            elif isinstance(email_resp, str):
+                raw_email = email_resp
+        if not attendee_name:
+            name_resp = responses.get("name")
+            if isinstance(name_resp, dict):
+                attendee_name = name_resp.get("value") or ""
+            elif isinstance(name_resp, str):
+                attendee_name = name_resp
+
+    attendee_name = attendee_name or "Prospective Client"
+    raw_email = raw_email or "unknown@prospect.navigatte.com"
     attendee_email = str(raw_email).strip().lower()
     attendee_phone = primary_attendee.get("phoneNumber") or inner.get("phoneNumber") or primary_attendee.get("phone")
     attendee_tz = primary_attendee.get("timeZone") or inner.get("timeZone")

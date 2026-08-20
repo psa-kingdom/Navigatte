@@ -71,6 +71,12 @@ class OutboxItemModel(BaseModel):
     provider_message_id: Optional[str] = None
     enquiry_id: Optional[str] = None
     error_message: Optional[str] = None
+    attempt_count: int = 0
+    max_attempts: int = 3
+    next_attempt_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    is_retryable: bool = True
+    tags: Dict[str, str] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     sent_at: Optional[datetime] = None
@@ -95,6 +101,12 @@ class OutboxItemModel(BaseModel):
             "provider_message_id": self.provider_message_id,
             "enquiry_id": self.enquiry_id,
             "error_message": self.error_message,
+            "attempt_count": self.attempt_count,
+            "max_attempts": self.max_attempts,
+            "next_attempt_at": self.next_attempt_at,
+            "last_error": self.last_error,
+            "is_retryable": self.is_retryable,
+            "tags": self.tags,
             "metadata": self.metadata,
             "created_at": self.created_at,
             "sent_at": self.sent_at,
