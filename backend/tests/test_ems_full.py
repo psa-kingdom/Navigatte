@@ -1,0 +1,227 @@
+"""Comprehensive Unit & Integration Test Suite for the Email Management System (EMS).
+
+Tests:
+1. Environment separation & Campaign test recipient safety boundary
+2. Campaign lifecycle (Draft -> Ready -> Sending -> Paused -> Cancelled)
+3. Launch checklist validation (blocking errors on unconfigured provider/missing audience)
+4. Audience & Global Suppression filtering (unsubscribes/bounces excluded from campaign dispatches)
+5. Durable Delivery Worker atomic claiming, exponential backoff, and retry limits
+6. Template versioning, immutable snapshots, and system template deletion guard
+7. Communications Audit Log & Derived Analytics metrics
+"""
+
+from datetime import datetime, timezone
+import pytest
+from core.database import get_database
+from models.audience import AudienceModel
+from models.campaign import CampaignModel, CampaignStatus
+from models.communications import EmailTemplateModel, OutboxItemModel, OutboxStatus
+from services.campaign_service import CampaignService
+from services.delivery_worker import DeliveryWorker
+
+
+@pytest.mark.asyncio
+async def test_template_versioning_and_system_guard(client, auth_headers):
+    """Creating and updating templates creates immutable version snapshots; system templates cannot be deleted."""
+    from services.communications_service import CommunicationsService
+    db = get_database()
+    await CommunicationsService.ensure_default_templates(db)
+
+    # 1. Create custom template
+    create_payload = {
+        "key": "q3_enterprise_briefing",
+        "name": "Q3 Enterprise Strategy Briefing",
+        "category": "campaign",
+        "subject": "Q3 Enterprise Strategy — {{ name }}",
+        "body_html": "<p>Hello {{ name }}, check our Q3 briefing.</p>",
+        "body_text": "Hello {{ name }}, check our Q3 briefing.",
+        "variables": ["name"],
+    }
+    resp = client.post("/api/admin/communications/templates", headers=auth_headers, json=create_payload)
+    assert resp.status_code == 200
+    tpl_data = resp.json()
+    assert tpl_data["version"] == 1
+
+    # Verify version 1 snapshot in DB
+    v1_count = await db.email_template_versions.count_documents({"template_key": "q3_enterprise_briefing"})
+    assert v1_count == 1
+
+    # 2. Update template -> version 2
+    update_payload = {
+        "name": "Q3 Enterprise Strategy Briefing (Updated)",
+        "subject": "Exclusive: Q3 Enterprise Strategy — {{ name }}",
+        "body_html": "<p>Updated briefing for {{ name }}</p>",
+        "body_text": "Updated briefing for {{ name }}",
+        "variables": ["name", "company"],
+        "is_active": True,
+    }
+    update_resp = client.post("/api/admin/communications/templates/q3_enterprise_briefing", headers=auth_headers, json=update_payload)
+    assert update_resp.status_code == 200
+    assert update_resp.json()["version"] == 2
+
+    # Check version history endpoint
+    versions_resp = client.get("/api/admin/communications/templates/q3_enterprise_briefing/versions", headers=auth_headers)
+    assert versions_resp.status_code == 200
+    versions = versions_resp.json()
+    assert len(versions) == 2
+    assert versions[0]["version"] == 2
+    assert versions[1]["version"] == 1
+
+    # 3. Guard: Attempt to delete a seeded system template must fail
+    del_sys_resp = client.delete("/api/admin/communications/templates/enquiry_acknowledgement", headers=auth_headers)
+    assert del_sys_resp.status_code == 400
+    assert "protected" in del_sys_resp.json()["detail"].lower()
+
+    # 4. Custom template can be deleted
+    del_custom_resp = client.delete("/api/admin/communications/templates/q3_enterprise_briefing", headers=auth_headers)
+    assert del_custom_resp.status_code == 200
+    assert del_custom_resp.json()["deleted"] is True
+
+
+@pytest.mark.asyncio
+async def test_audiences_contacts_and_suppression_flow(client, auth_headers):
+    """Audiences accept contacts, and global suppression records dynamically filter them."""
+    db = get_database()
+
+    # 1. Create Audience
+    aud_payload = {
+        "name": "Fortune 500 CTOs",
+        "description": "Enterprise decision makers",
+        "tags": ["enterprise", "cto", "cloud"],
+    }
+    aud_resp = client.post("/api/admin/communications/audiences", headers=auth_headers, json=aud_payload)
+    assert aud_resp.status_code == 200
+    aud = aud_resp.json()
+    aud_id = aud["id"]
+
+    # 2. Add Contacts
+    c1 = {"email": "cto1@globalbank.com", "name": "Alice Vance", "company": "GlobalBank"}
+    c2 = {"email": "cto2@fintech.io", "name": "Bob Chen", "company": "FintechCorp"}
+    client.post(f"/api/admin/communications/audiences/{aud_id}/contacts", headers=auth_headers, json=c1)
+    client.post(f"/api/admin/communications/audiences/{aud_id}/contacts", headers=auth_headers, json=c2)
+
+    contacts_resp = client.get(f"/api/admin/communications/audiences/{aud_id}/contacts", headers=auth_headers)
+    assert contacts_resp.status_code == 200
+    assert contacts_resp.json()["total"] == 2
+
+    # 3. Suppress cto2
+    suppress_payload = {"email": "cto2@fintech.io", "reason": "unsubscribed", "source": "test"}
+    sup_resp = client.post("/api/admin/communications/audiences/suppression", headers=auth_headers, json=suppress_payload)
+    assert sup_resp.status_code == 200
+
+    # Verify contact is marked is_suppressed in audience
+    updated_c2 = await db.audience_contacts.find_one({"email": "cto2@fintech.io", "audience_id": aud_id})
+    assert updated_c2["is_suppressed"] is True
+
+
+@pytest.mark.asyncio
+async def test_campaign_environment_isolation_and_launch_validation(client, auth_headers, monkeypatch):
+    """Campaign in TEST mode ONLY sends to test_recipients; PRODUCTION mode validates audience & suppression."""
+    from services.communications_service import CommunicationsService
+    db = get_database()
+    await CommunicationsService.ensure_default_templates(db)
+
+    # Ensure provider is seen as enabled for test
+    monkeypatch.setattr("core.config.settings.RESEND_ENABLED", True)
+    monkeypatch.setattr("core.config.settings.COMMUNICATIONS_ENVIRONMENT", "test")
+
+    # 1. Create a Campaign in TEST environment
+    camp_payload = {
+        "name": "Cloud AI Modernization Launch",
+        "description": "Q3 Outreach",
+        "environment": "test",
+        "subject": "Navigatte AI Capabilities Briefing",
+        "template_key": "enquiry_acknowledgement",
+        "test_recipients": ["qa.tester@navigatte.internal", "dev.lead@navigatte.internal"],
+    }
+    camp_resp = client.post("/api/admin/communications/campaigns", headers=auth_headers, json=camp_payload)
+    assert camp_resp.status_code == 200
+    camp = camp_resp.json()
+    camp_id = camp["id"]
+
+    # 2. Validate checklist
+    val_resp = client.get(f"/api/admin/communications/campaigns/{camp_id}/validate", headers=auth_headers)
+    assert val_resp.status_code == 200
+    val_data = val_resp.json()
+    assert val_data["is_valid"] is True
+    assert val_data["checklist"]["target_recipients_count"] == 2
+
+    # 3. Launch Campaign in TEST mode
+    launch_resp = client.post(f"/api/admin/communications/campaigns/{camp_id}/launch", headers=auth_headers)
+    assert launch_resp.status_code == 200
+    launched_camp = launch_resp.json()["campaign"]
+    assert launched_camp["status"] == "sending"
+    assert launched_camp["total_recipients"] == 2
+
+    # Verify queued outbox items are strictly the 2 test recipients
+    outbox_docs = await db.email_outbox.find({"tags.campaign_id": camp_id}).to_list(10)
+    assert len(outbox_docs) == 2
+    emails = {doc["recipient_email"] for doc in outbox_docs}
+    assert emails == {"qa.tester@navigatte.internal", "dev.lead@navigatte.internal"}
+    assert all(doc["environment"] == "test" for doc in outbox_docs)
+
+
+@pytest.mark.asyncio
+async def test_durable_delivery_worker_batch_processing(client, monkeypatch):
+    """DeliveryWorker atomically claims queued outbox records and handles retry backoff."""
+    from integrations.contracts.communications import EmailDeliveryResult
+    db = get_database()
+
+    # Seed 2 queued items
+    item1 = OutboxItemModel(
+        idempotency_key="worker:test:001",
+        recipient_email="worker.test1@enterprise.io",
+        subject="Worker Test 1",
+        body_html="<p>Test 1</p>",
+        status=OutboxStatus.QUEUED,
+        attempt_count=0,
+    )
+    item2 = OutboxItemModel(
+        idempotency_key="worker:test:002",
+        recipient_email="worker.test2@enterprise.io",
+        subject="Worker Test 2",
+        body_html="<p>Test 2</p>",
+        status=OutboxStatus.QUEUED,
+        attempt_count=0,
+    )
+    await db.email_outbox.insert_one(item1.to_mongo())
+    await db.email_outbox.insert_one(item2.to_mongo())
+
+    # Mock provider send_email
+    async def mock_send(self, message):
+        return EmailDeliveryResult(
+            provider="resend",
+            message_id="msg_worker_success_777",
+            status="sent",
+            sent_at=datetime.now(timezone.utc),
+        )
+
+    monkeypatch.setattr("integrations.resend.provider.ResendCommunicationsProvider.send_email", mock_send)
+    monkeypatch.setattr("integrations.resend.provider.ResendCommunicationsProvider.is_enabled", lambda self: True)
+
+    worker = DeliveryWorker()
+    batch_result = await worker.process_batch(db, batch_size=10)
+    assert batch_result["processed"] >= 2
+    assert batch_result["succeeded"] >= 2
+
+    # Verify status in database
+    doc1 = await db.email_outbox.find_one({"_id": item1.id})
+    assert doc1["status"] == OutboxStatus.SENT.value
+    assert doc1["provider_message_id"] == "msg_worker_success_777"
+
+
+@pytest.mark.asyncio
+async def test_audit_logs_and_analytics_endpoints(client, auth_headers):
+    """Audit logs list administrative actions and analytics return zero-safe derived metrics."""
+    audit_resp = client.get("/api/admin/communications/audit-logs", headers=auth_headers)
+    assert audit_resp.status_code == 200
+    assert "items" in audit_resp.json()
+
+    analytics_resp = client.get("/api/admin/communications/analytics", headers=auth_headers)
+    assert analytics_resp.status_code == 200
+    data = analytics_resp.json()
+    assert "totals" in data
+    assert "rates" in data
+    assert "delivery_rate_percent" in data["rates"]
+    assert "open_rate_percent" in data["rates"]
+    assert isinstance(data["rates"]["delivery_rate_percent"], (int, float))

@@ -44,10 +44,45 @@ class Settings:
     CAL_WEBHOOK_SUBSCRIBER_URL: Optional[str] = os.getenv("CAL_WEBHOOK_SUBSCRIBER_URL")
 
     # Resend Communications Integration
-    RESEND_ENABLED: bool = os.getenv("RESEND_ENABLED", "false").lower() in ("true", "1", "yes")
+    # Setting RESEND_API_KEY activates Resend delivery automatically.
+    # To explicitly disable dispatch even with a key set: RESEND_ENABLED=false
     RESEND_API_KEY: Optional[str] = os.getenv("RESEND_API_KEY")
     RESEND_FROM_EMAIL: str = os.getenv("RESEND_FROM_EMAIL", "Navigatte <updates@updates.navigatte.com>")
     RESEND_WEBHOOK_SECRET: Optional[str] = os.getenv("RESEND_WEBHOOK_SECRET")
+
+    # Communications Environment: 'test' | 'production'
+    # In 'test' mode, outbound campaigns are restricted to ALLOWED_TEST_RECIPIENTS.
+    # Defaults to 'test' unless ENVIRONMENT=production.
+    COMMUNICATIONS_ENVIRONMENT: str = os.getenv(
+        "COMMUNICATIONS_ENVIRONMENT",
+        "production" if os.getenv("ENVIRONMENT", "").lower() in ("production", "prod") else "test",
+    )
+    # Comma-separated list of email addresses allowed to receive emails in campaign test mode.
+    ALLOWED_TEST_RECIPIENTS_RAW: str = os.getenv("ALLOWED_TEST_RECIPIENTS", "")
+    _resend_enabled_override: Optional[bool] = None
+
+    @property
+    def RESEND_ENABLED(self) -> bool:
+        """Resend is enabled when an API key is present and not explicitly disabled."""
+        if self._resend_enabled_override is not None:
+            return self._resend_enabled_override
+        explicit = os.getenv("RESEND_ENABLED")
+        if explicit is not None:
+            return explicit.strip().lower() in ("true", "1", "yes")
+        # Auto-infer: enabled when key is present
+        return bool(self.RESEND_API_KEY)
+
+    @RESEND_ENABLED.setter
+    def RESEND_ENABLED(self, value: Optional[bool]) -> None:
+        self._resend_enabled_override = value
+
+    @property
+    def ALLOWED_TEST_RECIPIENTS(self) -> list:
+        """List of email addresses allowed to receive mail in test/development mode."""
+        raw = self.ALLOWED_TEST_RECIPIENTS_RAW
+        if not raw:
+            return []
+        return [e.strip().lower() for e in raw.split(",") if e.strip()]
 
     @property
     def CAL_API_KEY(self) -> Optional[str]:

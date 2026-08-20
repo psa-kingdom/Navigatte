@@ -34,9 +34,9 @@ def test_resend_provider_disabled_without_credentials(monkeypatch):
 
     import asyncio
     result = asyncio.run(provider.send_email(msg))
-    assert result.status == "disabled"
+    assert result.status == "provider_disabled"
     assert result.message_id is None
-    assert "not enabled" in result.error.lower()
+    assert "resend_api_key" in result.error.lower() or "not enabled" in result.error.lower()
 
 
 def test_resend_webhook_signature_verification():

@@ -59,8 +59,8 @@ def test_templates_lifecycle(client, auth_headers):
     assert update_resp.status_code == 200
 
 
-def test_send_test_email_and_outbox_listing(client, auth_headers):
-    """Admin can dispatch a test email and view it in the outbox."""
+def test_send_test_email_unconfigured_provider_returns_truthful_status(client, auth_headers):
+    """When provider is unconfigured, send-test reports success=False and status=provider_disabled."""
     payload = {
         "recipient_email": "client@enterprise.com",
         "recipient_name": "Enterprise Client",
@@ -70,7 +70,9 @@ def test_send_test_email_and_outbox_listing(client, auth_headers):
     send_resp = client.post("/api/admin/communications/send-test", headers=auth_headers, json=payload)
     assert send_resp.status_code == 200
     send_data = send_resp.json()
-    assert send_data["success"] is True
+    assert send_data["success"] is False
+    assert send_data["status"] == "provider_disabled"
+    assert "RESEND_API_KEY" in send_data["error_message"]
 
     # Check outbox listing
     outbox_resp = client.get("/api/admin/communications/outbox", headers=auth_headers)
@@ -78,6 +80,48 @@ def test_send_test_email_and_outbox_listing(client, auth_headers):
     outbox_data = outbox_resp.json()
     assert outbox_data["total"] >= 1
     assert any(item["recipient_email"] == "client@enterprise.com" for item in outbox_data["items"])
+
+
+def test_send_test_email_with_configured_provider(client, auth_headers, monkeypatch):
+    """When Resend is mocked as enabled/success, send-test reports success=True and status=sent."""
+    from integrations.contracts.communications import EmailDeliveryResult
+    from datetime import datetime, timezone
+    from services.communications_service import CommunicationsService
+
+    async def mock_send(self, message):
+        return EmailDeliveryResult(
+            provider="resend",
+            message_id="msg_test_mock_12345",
+            status="sent",
+            sent_at=datetime.now(timezone.utc),
+        )
+
+    monkeypatch.setattr("integrations.resend.provider.ResendCommunicationsProvider.send_email", mock_send)
+    monkeypatch.setattr("integrations.resend.provider.ResendCommunicationsProvider.is_enabled", lambda self: True)
+
+    payload = {
+        "recipient_email": "real.prospect@fortune500.com",
+        "recipient_name": "VP Technology",
+        "template_key": "enquiry_acknowledgement",
+        "variables": {"name": "VP Technology", "service_interest": "Technical Advisory"},
+    }
+    send_resp = client.post("/api/admin/communications/send-test", headers=auth_headers, json=payload)
+    assert send_resp.status_code == 200
+    send_data = send_resp.json()
+    assert send_data["success"] is True
+    assert send_data["status"] == "sent"
+    assert send_data["provider_message_id"] == "msg_test_mock_12345"
+
+
+def test_communications_diagnostics_and_single_outbox_get(client, auth_headers):
+    """Admin can query system diagnostics and fetch single outbox items by ID."""
+    diag_resp = client.get("/api/admin/communications/diagnostics", headers=auth_headers)
+    assert diag_resp.status_code == 200
+    diag_data = diag_resp.json()
+    assert "provider" in diag_data
+    assert "environment" in diag_data
+    assert diag_data["provider"]["name"] == "resend"
+    assert "sending_domain" in diag_data["provider"]
 
 
 @pytest.mark.asyncio
@@ -339,3 +383,55 @@ async def test_outbox_retry_endpoint(client, auth_headers):
     data = resp.json()
     assert data["attempt_count"] == 2
     assert data["outbox_id"] == failed_item.id
+
+    # Test single outbox item GET
+    item_resp = client.get(f"/api/admin/communications/outbox/{failed_item.id}", headers=auth_headers)
+    assert item_resp.status_code == 200
+    assert item_resp.json()["id"] == failed_item.id
+
+
+@pytest.mark.asyncio
+async def test_outbox_retry_delivered_guard(client, auth_headers):
+    """Retrying an already delivered email is rejected with 400."""
+    from core.database import get_database
+    from models.communications import OutboxItemModel
+
+    db = get_database()
+    delivered_item = OutboxItemModel(
+        idempotency_key="test:delivered:retry:002",
+        recipient_email="delivered@client.com",
+        recipient_name="Delivered Client",
+        subject="Already Delivered",
+        body_html="<p>Delivered</p>",
+        status=OutboxStatus.DELIVERED,
+        attempt_count=1,
+    )
+    await db.email_outbox.insert_one(delivered_item.to_mongo())
+
+    resp = client.post(f"/api/admin/communications/outbox/{delivered_item.id}/retry", headers=auth_headers)
+    assert resp.status_code == 400
+    assert "already delivered" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_outbox_retry_max_attempts_guard(client, auth_headers):
+    """Retrying an item that has reached max_attempts is rejected with 400."""
+    from core.database import get_database
+    from models.communications import OutboxItemModel
+
+    db = get_database()
+    exhausted_item = OutboxItemModel(
+        idempotency_key="test:exhausted:retry:003",
+        recipient_email="exhausted@client.com",
+        recipient_name="Exhausted Client",
+        subject="Max Attempts Exhausted",
+        body_html="<p>Exhausted</p>",
+        status=OutboxStatus.FAILED,
+        attempt_count=3,
+        max_attempts=3,
+    )
+    await db.email_outbox.insert_one(exhausted_item.to_mongo())
+
+    resp = client.post(f"/api/admin/communications/outbox/{exhausted_item.id}/retry", headers=auth_headers)
+    assert resp.status_code == 400
+    assert "maximum retry attempts" in resp.json()["detail"].lower()

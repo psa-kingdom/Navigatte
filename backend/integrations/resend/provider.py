@@ -41,13 +41,17 @@ class ResendCommunicationsProvider(CommunicationsProvider):
         """Dispatches an email through Resend API."""
         now = datetime.now(timezone.utc)
         if not self.is_enabled():
-            logger.info(f"Resend provider is disabled or not configured. Skipping email to {message.to}")
+            logger.warning(
+                f"Resend provider is not configured (RESEND_API_KEY missing). "
+                f"Skipping email to {message.to}. "
+                f"Set RESEND_API_KEY in the environment to enable delivery."
+            )
             return EmailDeliveryResult(
                 provider=self.name,
                 message_id=None,
-                status="disabled",
+                status="provider_disabled",
                 sent_at=now,
-                error="Resend provider is not enabled or RESEND_API_KEY is not set.",
+                error="RESEND_API_KEY is not set. Configure the API key to enable email delivery.",
             )
 
         try:

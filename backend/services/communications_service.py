@@ -7,7 +7,7 @@ and delivery webhook tracking with CRM timeline correlation.
 from datetime import datetime, timezone
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from core.config import settings
@@ -21,6 +21,21 @@ from models.communications import EmailTemplateModel, OutboxItemModel, OutboxSta
 from models.enquiry import EnquiryActivity
 
 logger = logging.getLogger(__name__)
+
+# Permanent error substrings — these should NOT be retried
+_PERMANENT_ERROR_PATTERNS = [
+    "invalid recipient",
+    "invalid email",
+    "invalid api key",
+    "api key",
+    "unauthorized",
+    "403",
+    "suppressed",
+    "unsubscribed",
+    "invalid sender",
+    "domain not verified",
+    "malformed",
+]
 
 # Default system transactional templates
 DEFAULT_TEMPLATES = [
@@ -98,7 +113,7 @@ class CommunicationsService:
         for tpl_data in DEFAULT_TEMPLATES:
             existing = await db.email_templates.find_one({"key": tpl_data["key"]})
             if not existing:
-                tpl = EmailTemplateModel(**tpl_data)
+                tpl = EmailTemplateModel(**tpl_data, is_system=True, category="system")
                 await db.email_templates.insert_one(tpl.to_mongo())
                 logger.info(f"Seeded default email template: {tpl.key}")
 
@@ -110,6 +125,17 @@ class CommunicationsService:
             placeholder = r"\{\{\s*" + re.escape(key) + r"\s*\}\}"
             rendered = re.sub(placeholder, str(val), rendered)
         return rendered
+
+    @staticmethod
+    def classify_error(error: Optional[str]) -> Literal["transient", "permanent"]:
+        """Classifies a delivery error as transient (retryable) or permanent (do not retry)."""
+        if not error:
+            return "transient"
+        error_lower = error.lower()
+        for pattern in _PERMANENT_ERROR_PATTERNS:
+            if pattern in error_lower:
+                return "permanent"
+        return "transient"
 
     async def send_transactional_email(
         self,
@@ -146,8 +172,9 @@ class CommunicationsService:
             body_text = f"Notification for {recipient_name or recipient_email}"
 
         from_email = getattr(settings, "RESEND_FROM_EMAIL", "Navigatte <updates@updates.navigatte.com>")
+        environment = getattr(settings, "COMMUNICATIONS_ENVIRONMENT", "test")
 
-        # 3. Create Outbox Item
+        # 3. Create Outbox Item (initial status SENDING — will be updated after dispatch)
         outbox_item = OutboxItemModel(
             idempotency_key=idem_key,
             template_key=template_key,
@@ -161,6 +188,7 @@ class CommunicationsService:
             provider=self.provider.name,
             enquiry_id=enquiry_id,
             attempt_count=1,
+            environment=environment,
             metadata=vars_dict,
         )
         await db.email_outbox.insert_one(outbox_item.to_mongo())
@@ -184,14 +212,23 @@ class CommunicationsService:
             outbox_item.provider_message_id = result.message_id
             outbox_item.sent_at = result.sent_at
             outbox_item.last_error = None
-        elif result.status == "disabled":
-            outbox_item.status = OutboxStatus.QUEUED
-            outbox_item.error_message = "Provider disabled or not configured."
-            outbox_item.last_error = "Provider credentials missing"
+            outbox_item.error_message = None
+        elif result.status == "provider_disabled":
+            outbox_item.status = OutboxStatus.PROVIDER_DISABLED
+            outbox_item.error_message = (
+                "Email delivery skipped: RESEND_API_KEY is not configured. "
+                "Set RESEND_API_KEY in environment variables to enable delivery."
+            )
+            outbox_item.last_error = result.error
+            outbox_item.is_retryable = False
+            outbox_item.failed_at = datetime.now(timezone.utc)
         else:
+            error_class = self.classify_error(result.error)
             outbox_item.status = OutboxStatus.FAILED
             outbox_item.error_message = result.error
             outbox_item.last_error = result.error
+            outbox_item.is_retryable = (error_class == "transient")
+            outbox_item.failed_at = datetime.now(timezone.utc)
 
         outbox_item.updated_at = datetime.now(timezone.utc)
         await db.email_outbox.update_one(
@@ -203,6 +240,8 @@ class CommunicationsService:
                 "error_message": outbox_item.error_message,
                 "attempt_count": outbox_item.attempt_count,
                 "last_error": outbox_item.last_error,
+                "is_retryable": outbox_item.is_retryable,
+                "failed_at": outbox_item.failed_at,
                 "updated_at": outbox_item.updated_at,
             }}
         )
@@ -228,13 +267,23 @@ class CommunicationsService:
         db: AsyncIOMotorDatabase,
         outbox_id: str,
     ) -> OutboxItemModel:
-        """Manually retries a queued or failed outbox item."""
+        """Manually retries a queued, failed, or provider_disabled outbox item with strict guards."""
         doc = await db.email_outbox.find_one({"_id": outbox_id})
         if not doc:
             raise ValueError(f"Outbox item {outbox_id} not found.")
 
         outbox_item = OutboxItemModel.from_mongo(doc)
         now = datetime.now(timezone.utc)
+
+        # Guard: Cannot retry already delivered message
+        if outbox_item.status == OutboxStatus.DELIVERED:
+            raise ValueError(f"Outbox item {outbox_id} is already delivered and cannot be re-sent.")
+
+        # Guard: Check attempt limit
+        if outbox_item.attempt_count >= outbox_item.max_attempts:
+            raise ValueError(
+                f"Outbox item {outbox_id} has reached maximum retry attempts ({outbox_item.max_attempts})."
+            )
 
         msg = EmailMessage(
             to=[EmailRecipient(email=outbox_item.recipient_email, name=outbox_item.recipient_name)],
@@ -256,10 +305,22 @@ class CommunicationsService:
             outbox_item.sent_at = result.sent_at
             outbox_item.error_message = None
             outbox_item.last_error = None
+        elif result.status == "provider_disabled":
+            outbox_item.status = OutboxStatus.PROVIDER_DISABLED
+            outbox_item.error_message = (
+                "Email retry skipped: RESEND_API_KEY is not configured. "
+                "Set RESEND_API_KEY in environment variables to enable delivery."
+            )
+            outbox_item.last_error = result.error
+            outbox_item.is_retryable = False
+            outbox_item.failed_at = now
         else:
+            error_class = self.classify_error(result.error)
             outbox_item.status = OutboxStatus.FAILED
             outbox_item.error_message = result.error
             outbox_item.last_error = result.error
+            outbox_item.is_retryable = (error_class == "transient")
+            outbox_item.failed_at = now
 
         await db.email_outbox.update_one(
             {"_id": outbox_item.id},
@@ -270,6 +331,8 @@ class CommunicationsService:
                 "error_message": outbox_item.error_message,
                 "attempt_count": outbox_item.attempt_count,
                 "last_error": outbox_item.last_error,
+                "is_retryable": outbox_item.is_retryable,
+                "failed_at": outbox_item.failed_at,
                 "updated_at": outbox_item.updated_at,
             }}
         )

@@ -8,42 +8,57 @@ import uuid
 
 
 class OutboxStatus(str, Enum):
-    QUEUED = "queued"
-    SENDING = "sending"
-    SENT = "sent"
-    DELIVERED = "delivered"
-    BOUNCED = "bounced"
-    COMPLAINED = "complained"
-    FAILED = "failed"
-    OPENED = "opened"
-    CLICKED = "clicked"
+    QUEUED = "queued"            # Waiting in a real queue (future worker architecture)
+    SENDING = "sending"          # Dispatch in progress
+    SENT = "sent"                # Provider accepted the message
+    DELIVERED = "delivered"      # Provider confirmed delivery
+    BOUNCED = "bounced"          # Hard or soft bounce from provider
+    COMPLAINED = "complained"    # Spam complaint registered
+    FAILED = "failed"            # Dispatch failed (transient or permanent error)
+    OPENED = "opened"            # Recipient opened the email
+    CLICKED = "clicked"          # Recipient clicked a link
+    PROVIDER_DISABLED = "provider_disabled"  # Provider not configured — no dispatch attempted
 
 
 class EmailTemplateModel(BaseModel):
-    """Database model for transactional and notification email templates."""
+    """Database model for transactional and campaign email templates with versioning."""
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    key: str  # e.g. 'enquiry_acknowledgement', 'consultation_booking_confirmation'
+    key: str  # Unique slug key e.g. 'enquiry_acknowledgement'
     name: str
+    category: str = "transactional"  # 'transactional' | 'campaign' | 'system'
     subject: str
     body_html: str
     body_text: Optional[str] = None
     variables: List[str] = Field(default_factory=list)
+    version: int = 1
     is_active: bool = True
+    is_system: bool = False  # System-seeded templates cannot be deleted
+    provider: str = "navigatte"  # 'navigatte' | 'resend'
+    provider_template_id: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_by: Optional[str] = None
+    updated_by: Optional[str] = None
 
     def to_mongo(self) -> Dict[str, Any]:
         return {
             "_id": self.id,
             "key": self.key,
             "name": self.name,
+            "category": self.category,
             "subject": self.subject,
             "body_html": self.body_html,
             "body_text": self.body_text,
             "variables": self.variables,
+            "version": self.version,
             "is_active": self.is_active,
+            "is_system": self.is_system,
+            "provider": self.provider,
+            "provider_template_id": self.provider_template_id,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "created_by": self.created_by,
+            "updated_by": self.updated_by,
         }
 
     @classmethod
@@ -76,6 +91,7 @@ class OutboxItemModel(BaseModel):
     next_attempt_at: Optional[datetime] = None
     last_error: Optional[str] = None
     is_retryable: bool = True
+    environment: str = "test"    # 'test' | 'production'
     tags: Dict[str, str] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -83,6 +99,9 @@ class OutboxItemModel(BaseModel):
     delivered_at: Optional[datetime] = None
     opened_at: Optional[datetime] = None
     clicked_at: Optional[datetime] = None
+    failed_at: Optional[datetime] = None
+    bounced_at: Optional[datetime] = None
+    complained_at: Optional[datetime] = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_mongo(self) -> Dict[str, Any]:
@@ -106,6 +125,7 @@ class OutboxItemModel(BaseModel):
             "next_attempt_at": self.next_attempt_at,
             "last_error": self.last_error,
             "is_retryable": self.is_retryable,
+            "environment": self.environment,
             "tags": self.tags,
             "metadata": self.metadata,
             "created_at": self.created_at,
@@ -113,6 +133,9 @@ class OutboxItemModel(BaseModel):
             "delivered_at": self.delivered_at,
             "opened_at": self.opened_at,
             "clicked_at": self.clicked_at,
+            "failed_at": self.failed_at,
+            "bounced_at": self.bounced_at,
+            "complained_at": self.complained_at,
             "updated_at": self.updated_at,
         }
 

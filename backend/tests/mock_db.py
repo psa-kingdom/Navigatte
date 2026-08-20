@@ -54,6 +54,17 @@ class MockCollection:
         self.name = name
         self.docs = []
 
+    def _get_val(self, doc, key):
+        if "." in key:
+            curr = doc
+            for part in key.split("."):
+                if isinstance(curr, dict):
+                    curr = curr.get(part)
+                else:
+                    return None
+            return curr
+        return doc.get(key)
+
     def _matches(self, doc, query):
         if not query:
             return True
@@ -68,22 +79,23 @@ class MockCollection:
                     return False
                 continue
 
+            doc_val = self._get_val(doc, key)
+
             if isinstance(val, dict):
                 if "$regex" in val:
                     pattern = val["$regex"]
                     options = val.get("$options", "")
                     flags = re.IGNORECASE if "i" in options else 0
-                    doc_val = str(doc.get(key, ""))
-                    if not re.search(pattern, doc_val, flags):
+                    str_val = str(doc_val or "")
+                    if not re.search(pattern, str_val, flags):
                         return False
                     continue
                 if "$exists" in val:
-                    exists = key in doc and doc[key] is not None
+                    exists = doc_val is not None
                     if exists != val["$exists"]:
                         return False
                     continue
                 if "$in" in val:
-                    doc_val = doc.get(key)
                     if hasattr(doc_val, "value"):
                         doc_val = doc_val.value
                     in_vals = [v.value if hasattr(v, "value") else v for v in val["$in"]]
@@ -91,7 +103,6 @@ class MockCollection:
                         return False
                     continue
                 if "$nin" in val:
-                    doc_val = doc.get(key)
                     if hasattr(doc_val, "value"):
                         doc_val = doc_val.value
                     nin_vals = [v.value if hasattr(v, "value") else v for v in val["$nin"]]
@@ -99,15 +110,12 @@ class MockCollection:
                         return False
                     continue
                 if "$ne" in val:
-                    doc_val = doc.get(key)
                     if hasattr(doc_val, "value"):
                         doc_val = doc_val.value
                     ne_val = val["$ne"]
                     if doc_val == ne_val:
                         return False
                     continue
-
-            doc_val = doc.get(key)
             # Unwrap Enum values if present
             if hasattr(doc_val, "value"):
                 doc_val = doc_val.value
@@ -206,7 +214,20 @@ class MockCollection:
                         d[k] = v
                 self.docs[i] = d
                 count += 1
-        return MockUpdateResult(count, count)
+    async def find_one_and_update(self, query, update, sort=None, return_document=True):
+        matched_docs = [d for d in self.docs if self._matches(d, query)]
+        if not matched_docs:
+            return None
+        target = matched_docs[0]
+        i = self.docs.index(target)
+        if "$set" in update:
+            for k, v in update["$set"].items():
+                target[k] = v
+        if "$inc" in update:
+            for k, v in update["$inc"].items():
+                target[k] = target.get(k, 0) + v
+        self.docs[i] = target
+        return dict(target)
 
 
 class MockDatabase:
@@ -219,6 +240,17 @@ class MockDatabase:
         self.integration_webhook_events = MockCollection("integration_webhook_events")
         self.email_templates = MockCollection("email_templates")
         self.email_outbox = MockCollection("email_outbox")
+        self.email_template_versions = MockCollection("email_template_versions")
+        self.campaigns = MockCollection("campaigns")
+        self.audiences = MockCollection("audiences")
+        self.audience_contacts = MockCollection("audience_contacts")
+        self.email_suppressions = MockCollection("email_suppressions")
+        self.communications_audit_logs = MockCollection("communications_audit_logs")
+
+    def __getattr__(self, name):
+        if name not in self.__dict__:
+            self.__dict__[name] = MockCollection(name)
+        return self.__dict__[name]
 
     @property
     def name(self):
@@ -230,6 +262,5 @@ class MockDatabase:
         return {"ok": 1.0}
 
     def __getitem__(self, name):
-        if not hasattr(self, name):
-            setattr(self, name, MockCollection(name))
         return getattr(self, name)
+
