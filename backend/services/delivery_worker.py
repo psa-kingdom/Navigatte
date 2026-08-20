@@ -101,6 +101,10 @@ class DeliveryWorker:
             )
             return {"status": "provider_disabled", "outbox_id": outbox_item.id}
 
+        tags = {"template_key": outbox_item.template_key or "custom"}
+        if outbox_item.enquiry_id:
+            tags["enquiry_id"] = str(outbox_item.enquiry_id)
+
         msg = EmailMessage(
             to=[EmailRecipient(email=outbox_item.recipient_email, name=outbox_item.recipient_name)],
             subject=outbox_item.subject,
@@ -108,7 +112,7 @@ class DeliveryWorker:
             text_body=outbox_item.body_text,
             from_email=outbox_item.from_email,
             idempotency_key=f"{outbox_item.idempotency_key}:worker:{outbox_item.attempt_count}",
-            tags={"template_key": outbox_item.template_key or "custom", "enquiry_id": str(outbox_item.enquiry_id or "")},
+            tags=tags,
         )
 
         try:

@@ -194,6 +194,10 @@ class CommunicationsService:
         await db.email_outbox.insert_one(outbox_item.to_mongo())
 
         # 4. Dispatch via Provider
+        tags = {"template_key": template_key or "custom"}
+        if enquiry_id:
+            tags["enquiry_id"] = str(enquiry_id)
+
         msg = EmailMessage(
             to=[EmailRecipient(email=recipient_email, name=recipient_name)],
             subject=subject,
@@ -201,7 +205,7 @@ class CommunicationsService:
             text_body=body_text,
             from_email=from_email,
             idempotency_key=idem_key,
-            tags={"template_key": template_key, "enquiry_id": str(enquiry_id or "")},
+            tags=tags,
         )
 
         result = await self.provider.send_email(msg)
@@ -285,6 +289,10 @@ class CommunicationsService:
                 f"Outbox item {outbox_id} has reached maximum retry attempts ({outbox_item.max_attempts})."
             )
 
+        tags = {"template_key": outbox_item.template_key or "custom"}
+        if outbox_item.enquiry_id:
+            tags["enquiry_id"] = str(outbox_item.enquiry_id)
+
         msg = EmailMessage(
             to=[EmailRecipient(email=outbox_item.recipient_email, name=outbox_item.recipient_name)],
             subject=outbox_item.subject,
@@ -292,7 +300,7 @@ class CommunicationsService:
             text_body=outbox_item.body_text,
             from_email=outbox_item.from_email,
             idempotency_key=f"{outbox_item.idempotency_key}:retry:{outbox_item.attempt_count + 1}",
-            tags={"template_key": outbox_item.template_key or "custom", "enquiry_id": str(outbox_item.enquiry_id or "")},
+            tags=tags,
         )
 
         result = await self.provider.send_email(msg)

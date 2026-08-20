@@ -225,3 +225,146 @@ async def test_audit_logs_and_analytics_endpoints(client, auth_headers):
     assert "delivery_rate_percent" in data["rates"]
     assert "open_rate_percent" in data["rates"]
     assert isinstance(data["rates"]["delivery_rate_percent"], (int, float))
+
+
+@pytest.mark.asyncio
+async def test_resend_tag_sanitization():
+    """Resend tag sanitization guarantees tags only contain ASCII letters, numbers, underscores, or dashes."""
+    from integrations.resend.client import _clean_resend_tag, ResendApiClient
+
+    # Valid tags
+    assert _clean_resend_tag("campaign_123") == "campaign_123"
+    assert _clean_resend_tag("template-key") == "template-key"
+
+    # Empty or whitespace strings return None
+    assert _clean_resend_tag("") is None
+    assert _clean_resend_tag("   ") is None
+    assert _clean_resend_tag(None) is None
+
+    # Special characters like spaces, colons, slashes get sanitized to underscores
+    assert _clean_resend_tag("enquiry:123/v2") == "enquiry_123_v2"
+    assert _clean_resend_tag("Tag With Spaces!") == "Tag_With_Spaces_"
+
+
+@pytest.mark.asyncio
+async def test_bulk_csv_import_reporting(client, auth_headers):
+    """Audience CSV bulk import reports valid, invalid, duplicate, and suppressed counts."""
+    db = get_database()
+
+    # 1. Create Audience
+    aud_resp = client.post("/api/admin/communications/audiences", headers=auth_headers, json={"name": "CSV Target Group"})
+    assert aud_resp.status_code == 200
+    aud_id = aud_resp.json()["id"]
+
+    # 2. Add a global suppression
+    client.post("/api/admin/communications/audiences/suppression", headers=auth_headers, json={"email": "bounced@suppressed.com", "reason": "hard_bounce"})
+
+    # 3. Import batch with valid, invalid, duplicate, and suppressed emails
+    batch = [
+        {"email": "valid1@enterprise.com", "name": "Valid 1", "company": "Corp A"},
+        {"email": "invalid-email-syntax", "name": "Bad", "company": "Corp B"},
+        {"email": "valid1@enterprise.com", "name": "Duplicate of Valid 1"},
+        {"email": "bounced@suppressed.com", "name": "Suppressed User"},
+        {"email": "valid2@enterprise.com", "name": "Valid 2"},
+    ]
+    import_resp = client.post(f"/api/admin/communications/audiences/{aud_id}/import", headers=auth_headers, json={"contacts": batch})
+    assert import_resp.status_code == 200
+    report = import_resp.json()
+    assert report["total_rows"] == 5
+    assert report["valid_count"] == 3  # 2 valid unique + 1 suppressed unique
+    assert report["invalid_count"] == 1
+    assert report["duplicate_count"] == 1
+    assert report["suppressed_count"] == 1
+    assert report["imported_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_campaign_exclusions_and_net_calculation(client, auth_headers, monkeypatch):
+    """Campaign exclusions filter out domains/emails and calculate net verified deliverable recipients."""
+    db = get_database()
+
+    # 1. Create Audience with 3 contacts
+    aud_resp = client.post("/api/admin/communications/audiences", headers=auth_headers, json={"name": "Exclusion Test Audience"})
+    aud_id = aud_resp.json()["id"]
+
+    client.post(f"/api/admin/communications/audiences/{aud_id}/contacts", headers=auth_headers, json={"email": "employee@navigatte.com", "name": "Staff"})
+    client.post(f"/api/admin/communications/audiences/{aud_id}/contacts", headers=auth_headers, json={"email": "client@enterprise.com", "name": "Client"})
+    client.post(f"/api/admin/communications/audiences/{aud_id}/contacts", headers=auth_headers, json={"email": "partner@consulting.io", "name": "Partner"})
+
+    # 2. Create Production Campaign with domain exclusion '@navigatte.com'
+    camp_payload = {
+        "name": "Exclusions Campaign",
+        "environment": "production",
+        "subject": "Advisory Note",
+        "template_key": "custom",
+        "custom_html": "<p>Content</p>",
+        "audience_id": aud_id,
+        "exclusions": ["@navigatte.com"],
+    }
+    camp_resp = client.post("/api/admin/communications/campaigns", headers=auth_headers, json=camp_payload)
+    assert camp_resp.status_code == 200
+    camp_id = camp_resp.json()["id"]
+
+    # 3. Calculate recipients endpoint
+    calc_resp = client.post(f"/api/admin/communications/campaigns/{camp_id}/calculate-recipients", headers=auth_headers)
+    assert calc_resp.status_code == 200
+    calc_data = calc_resp.json()
+    assert calc_data["raw_count"] == 3
+    assert calc_data["excluded_count"] == 1  # employee@navigatte.com excluded
+    assert calc_data["final_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_campaign_draft_update_and_preview(client, auth_headers):
+    """Campaign drafts can be updated and previewed with sample variable interpolation."""
+    # 1. Create Draft
+    camp_resp = client.post("/api/admin/communications/campaigns", headers=auth_headers, json={
+        "name": "Draft to Edit",
+        "subject": "Initial Subject {{ name }}",
+        "custom_html": "<p>Hello {{ name }} at {{ company }}</p>",
+    })
+    assert camp_resp.status_code == 200
+    camp_id = camp_resp.json()["id"]
+
+    # 2. Update Draft
+    put_resp = client.put(f"/api/admin/communications/campaigns/{camp_id}", headers=auth_headers, json={
+        "name": "Draft to Edit (Renamed)",
+        "subject": "Updated Subject {{ name }}",
+    })
+    assert put_resp.status_code == 200
+    assert put_resp.json()["name"] == "Draft to Edit (Renamed)"
+
+    # 3. Preview Endpoint
+    prev_resp = client.get(f"/api/admin/communications/campaigns/{camp_id}/preview", headers=auth_headers)
+    assert prev_resp.status_code == 200
+    prev_data = prev_resp.json()
+    assert "Sarah Connor" in prev_data["subject"]
+    assert "Cyberdyne Systems" in prev_data["html_body"]
+
+
+@pytest.mark.asyncio
+async def test_template_duplicate_and_restore(client, auth_headers):
+    """Templates can be duplicated and restored to previous version snapshots."""
+    from services.communications_service import CommunicationsService
+    db = get_database()
+    await CommunicationsService.ensure_default_templates(db)
+
+    # 1. Duplicate system template
+    dup_resp = client.post("/api/admin/communications/templates/enquiry_acknowledgement/duplicate", headers=auth_headers)
+    assert dup_resp.status_code == 200
+    dup_key = dup_resp.json()["key"]
+    assert "enquiry_acknowledgement_copy" in dup_key
+
+    # 2. Update the copy (version 2)
+    client.post(f"/api/admin/communications/templates/{dup_key}", headers=auth_headers, json={
+        "name": "Modified Copy",
+        "subject": "New Subject",
+        "body_html": "<p>Version 2 Content</p>",
+        "is_active": True,
+    })
+
+    # 3. Restore to version 1
+    restore_resp = client.post(f"/api/admin/communications/templates/{dup_key}/restore/1", headers=auth_headers)
+    assert restore_resp.status_code == 200
+    assert restore_resp.json()["version"] == 3  # restored snapshot saved as new incremented version 3
+

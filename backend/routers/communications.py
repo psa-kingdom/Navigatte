@@ -259,6 +259,149 @@ async def list_template_versions(
     return [EmailTemplateVersionModel.from_mongo(d).model_dump() for d in docs]
 
 
+@router.get("/templates/{key}/preview")
+async def preview_template(
+    key: str,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Renders a live preview of the template with realistic placeholder data."""
+    tpl_doc = await db.email_templates.find_one({"key": key})
+    if not tpl_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found.")
+    tpl = EmailTemplateModel.from_mongo(tpl_doc)
+
+    sample_vars = {
+        "name": "Sarah Connor",
+        "company": "Cyberdyne Systems",
+        "email": "sarah@cyberdyne.io",
+        "service_interest": "Cloud & AI Architecture",
+        "start_time": "Aug 25, 2026, 2:00 PM UTC",
+        "timezone": "UTC",
+        "meeting_url": "https://navigatte.com/meet/demo-session",
+        "unsubscribe_url": "https://navigatte.com/unsubscribe?email=sarah@cyberdyne.io",
+    }
+
+    rendered_subject = CommunicationsService.render_template(tpl.subject, sample_vars)
+    rendered_html = CommunicationsService.render_template(tpl.body_html, sample_vars)
+
+    return {
+        "key": tpl.key,
+        "name": tpl.name,
+        "version": tpl.version,
+        "subject": rendered_subject,
+        "html_body": rendered_html,
+        "sample_variables": sample_vars,
+    }
+
+
+@router.post("/templates/{key}/duplicate")
+async def duplicate_template(
+    key: str,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Duplicates an existing template as a new custom template."""
+    src_doc = await db.email_templates.find_one({"key": key})
+    if not src_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source template not found.")
+
+    src = EmailTemplateModel.from_mongo(src_doc)
+    new_key = f"{src.key}_copy"
+    suffix = 1
+    while await db.email_templates.find_one({"key": new_key}):
+        suffix += 1
+        new_key = f"{src.key}_copy_{suffix}"
+
+    now = datetime.now(timezone.utc)
+    new_tpl = EmailTemplateModel(
+        key=new_key,
+        name=f"{src.name} (Copy)",
+        category=src.category,
+        subject=src.subject,
+        body_html=src.body_html,
+        body_text=src.body_text,
+        variables=src.variables,
+        version=1,
+        is_active=True,
+        is_system=False,
+        provider=src.provider,
+        created_by=admin.email,
+        created_at=now,
+        updated_at=now,
+    )
+    await db.email_templates.insert_one(new_tpl.to_mongo())
+
+    from models.template_version import EmailTemplateVersionModel
+    v_snapshot = EmailTemplateVersionModel(
+        template_id=new_tpl.id,
+        template_key=new_tpl.key,
+        version=1,
+        name=new_tpl.name,
+        subject=new_tpl.subject,
+        body_html=new_tpl.body_html,
+        body_text=new_tpl.body_text,
+        variables=new_tpl.variables,
+        created_by=admin.email,
+        change_summary="Duplicated from " + key,
+    )
+    await db.email_template_versions.insert_one(v_snapshot.to_mongo())
+
+    return new_tpl.model_dump()
+
+
+@router.post("/templates/{key}/restore/{version_number}")
+async def restore_template_version(
+    key: str,
+    version_number: int,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Restores a template to content from a previous version snapshot and increments the version."""
+    v_doc = await db.email_template_versions.find_one({"template_key": key, "version": version_number})
+    if not v_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version snapshot not found.")
+
+    tpl_doc = await db.email_templates.find_one({"key": key})
+    if not tpl_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found.")
+
+    current_version = tpl_doc.get("version", 1)
+    new_version = current_version + 1
+    now = datetime.now(timezone.utc)
+
+    await db.email_templates.update_one(
+        {"key": key},
+        {"$set": {
+            "name": v_doc.get("name"),
+            "subject": v_doc.get("subject"),
+            "body_html": v_doc.get("body_html"),
+            "body_text": v_doc.get("body_text"),
+            "variables": v_doc.get("variables", []),
+            "version": new_version,
+            "updated_by": admin.email,
+            "updated_at": now,
+        }}
+    )
+
+    from models.template_version import EmailTemplateVersionModel
+    v_snapshot = EmailTemplateVersionModel(
+        template_id=str(tpl_doc.get("_id")),
+        template_key=key,
+        version=new_version,
+        name=v_doc.get("name"),
+        subject=v_doc.get("subject"),
+        body_html=v_doc.get("body_html"),
+        body_text=v_doc.get("body_text"),
+        variables=v_doc.get("variables", []),
+        created_by=admin.email,
+        change_summary=f"Restored from version {version_number}",
+    )
+    await db.email_template_versions.insert_one(v_snapshot.to_mongo())
+
+    return {"success": True, "key": key, "version": new_version, "restored_from": version_number}
+
+
 @router.delete("/templates/{key}")
 async def delete_template(
     key: str,

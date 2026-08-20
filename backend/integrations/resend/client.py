@@ -5,6 +5,7 @@ Does not require external heavy SDKs or introduce fragile dependencies.
 """
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 import httpx
 from core.config import settings
@@ -12,6 +13,21 @@ from core.config import settings
 logger = logging.getLogger(__name__)
 
 RESEND_API_BASE = "https://api.resend.com"
+
+
+def _clean_resend_tag(val: Any) -> Optional[str]:
+    """Sanitizes a tag name or value according to Resend validation rules.
+    
+    Resend rule: 'Tags should only contain ASCII letters, numbers, underscores, or dashes.'
+    Empty strings or special characters are omitted or sanitized.
+    """
+    if val is None:
+        return None
+    s = str(val).strip()
+    if not s:
+        return None
+    cleaned = re.sub(r'[^a-zA-Z0-9_-]', '_', s)
+    return cleaned if cleaned else None
 
 
 class ResendApiClient:
@@ -63,7 +79,14 @@ class ResendApiClient:
         if reply_to:
             payload["reply_to"] = reply_to
         if tags:
-            payload["tags"] = [{"name": k, "value": v} for k, v in tags.items()]
+            cleaned_tags = []
+            for k, v in tags.items():
+                clean_k = _clean_resend_tag(k)
+                clean_v = _clean_resend_tag(v)
+                if clean_k and clean_v:
+                    cleaned_tags.append({"name": clean_k, "value": clean_v})
+            if cleaned_tags:
+                payload["tags"] = cleaned_tags
         if headers:
             payload["headers"] = headers
 

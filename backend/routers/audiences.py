@@ -35,6 +35,17 @@ class AddContactRequest(BaseModel):
     attributes: Dict[str, Any] = {}
 
 
+class BulkImportRow(BaseModel):
+    email: str
+    name: Optional[str] = None
+    company: Optional[str] = None
+    attributes: Dict[str, Any] = {}
+
+
+class BulkImportRequest(BaseModel):
+    contacts: List[BulkImportRow]
+
+
 class SuppressionCreateRequest(BaseModel):
     email: EmailStr
     reason: str = "manual"  # 'unsubscribed' | 'hard_bounce' | 'complaint' | 'manual'
@@ -72,6 +83,20 @@ async def create_audience(
     )
     await db.audiences.insert_one(audience.to_mongo())
     return audience.model_dump()
+
+
+@router.delete("/{audience_id}")
+async def delete_audience(
+    audience_id: str,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Deletes an audience and its associated contact records."""
+    res = await db.audiences.delete_one({"_id": audience_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audience not found.")
+    await db.audience_contacts.delete_many({"audience_id": audience_id})
+    return {"success": True, "deleted_audience_id": audience_id}
 
 
 @router.get("/{audience_id}/contacts")
@@ -131,6 +156,98 @@ async def add_audience_contact(
     return contact.model_dump()
 
 
+@router.post("/{audience_id}/import")
+async def import_audience_contacts(
+    audience_id: str,
+    payload: BulkImportRequest,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Bulk imports contacts into an audience from parsed CSV or Excel data with validation."""
+    import re
+    aud = await db.audiences.find_one({"_id": audience_id})
+    if not aud:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audience not found.")
+
+    email_regex = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
+    suppression_emails = set(await db.email_suppressions.distinct("email"))
+
+    total_rows = len(payload.contacts)
+    valid_count = 0
+    invalid_count = 0
+    duplicate_count = 0
+    imported_count = 0
+    suppressed_count = 0
+    invalid_rows = []
+
+    seen_in_batch = set()
+    now = datetime.now(timezone.utc)
+
+    for idx, row in enumerate(payload.contacts):
+        raw_em = (row.email or "").strip().lower()
+        if not raw_em or not email_regex.match(raw_em):
+            invalid_count += 1
+            invalid_rows.append({"row_index": idx + 1, "email": row.email, "error": "Invalid email syntax"})
+            continue
+
+        if raw_em in seen_in_batch:
+            duplicate_count += 1
+            continue
+
+        seen_in_batch.add(raw_em)
+        valid_count += 1
+
+        is_supp = raw_em in suppression_emails
+        if is_supp:
+            suppressed_count += 1
+
+        contact = AudienceContactModel(
+            audience_id=audience_id,
+            email=raw_em,
+            name=row.name,
+            company=row.company,
+            attributes=row.attributes or {},
+            is_suppressed=is_supp,
+            created_at=now,
+        )
+
+        await db.audience_contacts.update_one(
+            {"audience_id": audience_id, "email": raw_em},
+            {"$set": contact.to_mongo()},
+            upsert=True,
+        )
+        imported_count += 1
+
+    # Update member count
+    count = await db.audience_contacts.count_documents({"audience_id": audience_id})
+    await db.audiences.update_one({"_id": audience_id}, {"$set": {"member_count": count, "updated_at": now}})
+
+    # Write audit log
+    audit = CommunicationsAuditLogModel(
+        actor_email=admin.email,
+        action="audience_contacts_imported",
+        target_type="audience",
+        target_id=audience_id,
+        details={
+            "total_rows": total_rows,
+            "imported_count": imported_count,
+            "suppressed_count": suppressed_count,
+            "duplicate_count": duplicate_count,
+        },
+    )
+    await db.communications_audit_logs.insert_one(audit.to_mongo())
+
+    return {
+        "total_rows": total_rows,
+        "valid_count": valid_count,
+        "invalid_count": invalid_count,
+        "duplicate_count": duplicate_count,
+        "imported_count": imported_count,
+        "suppressed_count": suppressed_count,
+        "invalid_rows": invalid_rows[:20],
+    }
+
+
 # Suppression Endpoints
 @router.get("/suppression")
 async def list_suppressions(
@@ -177,4 +294,44 @@ async def add_suppression(
         {"$set": {"is_suppressed": True}}
     )
 
+    # Audit log
+    audit = CommunicationsAuditLogModel(
+        actor_email=admin.email,
+        action="suppression_added",
+        target_type="suppression",
+        target_id=clean_email,
+        details={"reason": payload.reason, "source": payload.source},
+    )
+    await db.communications_audit_logs.insert_one(audit.to_mongo())
+
     return {"success": True, "email": clean_email, "reason": payload.reason}
+
+
+@router.delete("/suppression/{email}")
+async def remove_suppression(
+    email: str,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Removes an email address from global suppression."""
+    clean_email = email.lower().strip()
+    res = await db.email_suppressions.delete_one({"email": clean_email})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Suppression record not found.")
+
+    await db.audience_contacts.update_many(
+        {"email": clean_email},
+        {"$set": {"is_suppressed": False}}
+    )
+
+    # Audit log
+    audit = CommunicationsAuditLogModel(
+        actor_email=admin.email,
+        action="suppression_removed",
+        target_type="suppression",
+        target_id=clean_email,
+    )
+    await db.communications_audit_logs.insert_one(audit.to_mongo())
+
+    return {"success": True, "removed_email": clean_email}
+

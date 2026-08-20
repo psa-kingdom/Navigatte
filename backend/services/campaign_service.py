@@ -23,7 +23,110 @@ class CampaignService:
     """Enterprise domain service managing the full EMS campaign lifecycle."""
 
     @staticmethod
+    def is_email_excluded(email: str, exclusions: List[str]) -> bool:
+        """Checks if an email matches any explicit email or domain exclusions (e.g. '@navigatte.com')."""
+        if not exclusions:
+            return False
+        clean_email = email.lower().strip()
+        for excl in exclusions:
+            clean_excl = excl.lower().strip()
+            if not clean_excl:
+                continue
+            if clean_excl.startswith("@") and clean_email.endswith(clean_excl):
+                return True
+            if clean_excl.startswith("*@") and clean_email.endswith(clean_excl[1:]):
+                return True
+            if clean_email == clean_excl:
+                return True
+        return False
+
+    @classmethod
+    async def resolve_recipients(
+        cls,
+        db: AsyncIOMotorDatabase,
+        campaign: CampaignModel,
+    ) -> Dict[str, Any]:
+        """Calculates raw, suppressed, excluded, and final deliverable recipients for a campaign."""
+        if campaign.environment == "test":
+            # Test Mode: HARD SAFETY BOUNDARY — strictly uses configured test_recipients
+            test_list = [e.lower().strip() for e in campaign.test_recipients if e.strip()]
+            return {
+                "raw_count": len(test_list),
+                "suppressed_count": 0,
+                "excluded_count": 0,
+                "final_count": len(test_list),
+                "recipients": [{"email": e, "name": "Test Recipient", "vars": {"name": "Test Recipient", "email": e}} for e in test_list],
+            }
+
+        # Production Mode: Gather candidates from selected source
+        candidate_contacts: Dict[str, Dict[str, Any]] = {}
+
+        # 1. Audience contacts
+        if campaign.audience_id:
+            aud_contacts = await db.audience_contacts.find(
+                {"audience_id": campaign.audience_id, "is_suppressed": False}
+            ).to_list(10000)
+            for c in aud_contacts:
+                em = c["email"].lower().strip()
+                candidate_contacts[em] = {
+                    "email": em,
+                    "name": c.get("name") or "",
+                    "company": c.get("company") or "",
+                    "attributes": c.get("attributes", {}),
+                }
+
+        # 2. Manual contacts if 'manual' or 'both'
+        if campaign.audience_source in ("manual", "both") or getattr(campaign, "manual_recipients", None):
+            for raw_em in getattr(campaign, "manual_recipients", []):
+                clean_em = raw_em.lower().strip()
+                if clean_em and clean_em not in candidate_contacts:
+                    candidate_contacts[clean_em] = {
+                        "email": clean_em,
+                        "name": "",
+                        "company": "",
+                        "attributes": {},
+                    }
+
+        raw_count = len(candidate_contacts)
+
+        # 3. Global Suppression Check
+        suppression_emails = set(await db.email_suppressions.distinct("email"))
+        unsuppressed = {
+            em: data for em, data in candidate_contacts.items() if em not in suppression_emails
+        }
+        suppressed_count = raw_count - len(unsuppressed)
+
+        # 4. Campaign-Specific Exclusions Check
+        exclusions = campaign.exclusions or []
+        final_recipients = []
+        excluded_count = 0
+
+        for em, data in unsuppressed.items():
+            if cls.is_email_excluded(em, exclusions):
+                excluded_count += 1
+            else:
+                final_recipients.append({
+                    "email": em,
+                    "name": data.get("name") or "Valued Client",
+                    "vars": {
+                        "name": data.get("name") or "Valued Client",
+                        "company": data.get("company") or "",
+                        "email": em,
+                        **data.get("attributes", {}),
+                    },
+                })
+
+        return {
+            "raw_count": raw_count,
+            "suppressed_count": suppressed_count,
+            "excluded_count": excluded_count,
+            "final_count": len(final_recipients),
+            "recipients": final_recipients,
+        }
+
+    @classmethod
     async def validate_launch_checklist(
+        cls,
         db: AsyncIOMotorDatabase,
         campaign: CampaignModel,
     ) -> Tuple[bool, Dict[str, Any], List[str]]:
@@ -42,54 +145,43 @@ class CampaignService:
         if not provider_enabled:
             errors.append("Provider is not configured or disabled (RESEND_API_KEY missing).")
 
-        # 3. Template validation
-        template = await db.email_templates.find_one({"key": campaign.template_key, "is_active": True})
-        template_valid = bool(template)
-        if not template_valid:
-            errors.append(f"Active template '{campaign.template_key}' was not found.")
+        # 3. Template / Content validation
+        has_custom_html = bool(getattr(campaign, "custom_html", None))
+        template_valid = False
+        if campaign.template_key and campaign.template_key != "custom":
+            template = await db.email_templates.find_one({"key": campaign.template_key, "is_active": True})
+            template_valid = bool(template)
+        elif has_custom_html:
+            template_valid = True
 
-        # 4. Audience and Recipients validation
-        target_count = 0
-        suppressed_count = 0
+        if not template_valid and not has_custom_html:
+            errors.append(f"Active template '{campaign.template_key}' or authored HTML content was not found.")
+
+        # 4. Subject Line
+        if not campaign.subject or not campaign.subject.strip():
+            errors.append("Campaign email subject line is required.")
+
+        # 5. Audience and Recipients validation
+        rec_calc = await cls.resolve_recipients(db, campaign)
+        final_count = rec_calc["final_count"]
+
         if campaign.environment == "test":
-            # Test mode: only uses test_recipients
-            if not campaign.test_recipients:
-                errors.append("Test environment requires at least one test recipient.")
-            target_count = len(campaign.test_recipients)
+            if final_count == 0:
+                errors.append("Test environment requires at least one configured test recipient.")
         else:
-            # Production mode: validates audience
-            if not campaign.audience_id:
-                errors.append("Production campaign requires a target audience.")
-            else:
-                aud = await db.audiences.find_one({"_id": campaign.audience_id})
-                if not aud:
-                    errors.append(f"Target audience '{campaign.audience_id}' not found.")
-                else:
-                    raw_contacts = await db.audience_contacts.find(
-                        {"audience_id": campaign.audience_id, "is_suppressed": False}
-                    ).to_list(10000)
-
-                    # Check global suppression
-                    suppression_emails = set(
-                        await db.email_suppressions.distinct("email")
-                    )
-                    eligible_contacts = [
-                        c for c in raw_contacts if c["email"].lower().strip() not in suppression_emails
-                    ]
-                    target_count = len(eligible_contacts)
-                    suppressed_count = len(raw_contacts) - target_count
-
-                    if target_count == 0:
-                        errors.append("Audience contains 0 deliverable contacts after suppression filtering.")
+            if final_count == 0:
+                errors.append("Production audience contains 0 deliverable contacts after exclusions and suppression.")
 
         checklist = {
             "environment_confirmed": env_match,
             "environment": campaign.environment,
             "provider_healthy": provider_enabled,
-            "template_active": template_valid,
+            "template_active": template_valid or has_custom_html,
             "template_key": campaign.template_key,
-            "target_recipients_count": target_count,
-            "suppressed_recipients_count": suppressed_count,
+            "raw_recipients_count": rec_calc["raw_count"],
+            "suppressed_recipients_count": rec_calc["suppressed_count"],
+            "excluded_recipients_count": rec_calc["excluded_count"],
+            "target_recipients_count": final_count,
             "has_blocking_errors": len(errors) > 0,
             "validated_at": now.isoformat(),
         }
@@ -116,7 +208,6 @@ class CampaignService:
         # Evaluate launch checklist
         is_valid, checklist, errors = await self.validate_launch_checklist(db, campaign)
         if not is_valid:
-            # Record checklist failure
             await db.campaigns.update_one(
                 {"_id": campaign.id},
                 {"$set": {"launch_checklist": checklist, "updated_at": datetime.now(timezone.utc)}}
@@ -124,48 +215,30 @@ class CampaignService:
             raise ValueError(f"Launch checklist validation failed: {'; '.join(errors)}")
 
         now = datetime.now(timezone.utc)
-        tpl_doc = await db.email_templates.find_one({"key": campaign.template_key})
+        tpl_doc = await db.email_templates.find_one({"key": campaign.template_key}) if campaign.template_key != "custom" else None
         tpl = EmailTemplateModel.from_mongo(tpl_doc) if tpl_doc else None
 
-        # Resolve recipients based on environment safety boundary
-        recipients_to_queue: List[Dict[str, Any]] = []
+        # Resolve recipients
+        rec_calc = await self.resolve_recipients(db, campaign)
+        recipients_to_queue = rec_calc["recipients"]
 
-        if campaign.environment == "test":
-            # HARD BOUNDARY: Test mode ONLY sends to explicit test_recipients
-            for email in campaign.test_recipients:
-                recipients_to_queue.append({
-                    "email": email,
-                    "name": "Test Recipient",
-                    "vars": {"name": "Test Recipient", "email": email},
-                })
-        else:
-            # Production mode: query audience contacts minus suppression
-            suppression_emails = set(await db.email_suppressions.distinct("email"))
-            contacts = await db.audience_contacts.find(
-                {"audience_id": campaign.audience_id, "is_suppressed": False}
-            ).to_list(10000)
-
-            for contact in contacts:
-                clean_email = contact["email"].lower().strip()
-                if clean_email not in suppression_emails:
-                    recipients_to_queue.append({
-                        "email": clean_email,
-                        "name": contact.get("name", ""),
-                        "vars": {
-                            "name": contact.get("name") or "Valued Client",
-                            "company": contact.get("company") or "",
-                            **contact.get("attributes", {}),
-                        },
-                    })
+        # Authored content or template
+        base_subject = campaign.subject or (tpl.subject if tpl else "Navigatte Communication")
+        base_html = getattr(campaign, "custom_html", None) or (tpl.body_html if tpl else "<p>Navigatte Advisory</p>")
+        base_text = (tpl.body_text if tpl else None)
 
         # Generate Outbox Items
         outbox_items = []
         from_email = campaign.sender_email or getattr(settings, "RESEND_FROM_EMAIL", "Navigatte <updates@updates.navigatte.com>")
 
         for rec in recipients_to_queue:
-            rendered_subject = CommunicationsService.render_template(campaign.subject or tpl.subject, rec["vars"]) if tpl else campaign.subject
-            rendered_html = CommunicationsService.render_template(tpl.body_html, rec["vars"]) if tpl else f"<p>Campaign {campaign.name}</p>"
-            rendered_text = CommunicationsService.render_template(tpl.body_text or "", rec["vars"]) if (tpl and tpl.body_text) else None
+            rendered_subject = CommunicationsService.render_template(base_subject, rec["vars"])
+            rendered_html = CommunicationsService.render_template(base_html, rec["vars"])
+            rendered_text = CommunicationsService.render_template(base_text or "", rec["vars"]) if base_text else None
+
+            tags = {"campaign_id": campaign.id}
+            if campaign.template_key:
+                tags["template_key"] = campaign.template_key
 
             item = OutboxItemModel(
                 idempotency_key=f"campaign:{campaign.id}:{rec['email']}",
@@ -179,7 +252,7 @@ class CampaignService:
                 status=OutboxStatus.QUEUED,
                 provider="resend",
                 environment=campaign.environment,
-                tags={"campaign_id": campaign.id, "template_key": campaign.template_key},
+                tags=tags,
                 metadata={"campaign_id": campaign.id, "campaign_name": campaign.name},
             )
             outbox_items.append(item.to_mongo())
@@ -216,8 +289,10 @@ class CampaignService:
                 "campaign_name": campaign.name,
                 "recipients_count": len(outbox_items),
                 "template_key": campaign.template_key,
+                "environment": campaign.environment,
             },
         )
         await db.communications_audit_logs.insert_one(audit.to_mongo())
 
         return campaign
+

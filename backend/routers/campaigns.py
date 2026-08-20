@@ -30,19 +30,28 @@ class CampaignCreateRequest(BaseModel):
     sender_email: Optional[str] = None
     reply_to: Optional[str] = None
     subject: str
-    template_key: str
+    template_key: str = "custom"
     audience_id: Optional[str] = None
+    audience_source: str = "audience"  # 'newsletter' | 'manual' | 'both' | 'audience'
+    manual_recipients: List[str] = []
+    exclusions: List[str] = []
+    custom_html: Optional[str] = None
     test_recipients: List[EmailStr] = []
 
 
 class CampaignUpdateRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    environment: Optional[str] = None
     sender_email: Optional[str] = None
     reply_to: Optional[str] = None
     subject: Optional[str] = None
     template_key: Optional[str] = None
     audience_id: Optional[str] = None
+    audience_source: Optional[str] = None
+    manual_recipients: Optional[List[str]] = None
+    exclusions: Optional[List[str]] = None
+    custom_html: Optional[str] = None
     test_recipients: Optional[List[EmailStr]] = None
 
 
@@ -85,6 +94,10 @@ async def create_campaign(
         subject=payload.subject,
         template_key=payload.template_key,
         audience_id=payload.audience_id,
+        audience_source=payload.audience_source,
+        manual_recipients=payload.manual_recipients,
+        exclusions=payload.exclusions,
+        custom_html=payload.custom_html,
         test_recipients=payload.test_recipients,
         status=CampaignStatus.DRAFT,
         created_by=admin.email,
@@ -121,6 +134,123 @@ async def get_campaign(
             detail=f"Campaign '{campaign_id}' not found.",
         )
     return CampaignModel.from_mongo(doc).model_dump()
+
+
+@router.put("/{campaign_id}")
+async def update_campaign(
+    campaign_id: str,
+    payload: CampaignUpdateRequest,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Updates an editable campaign draft."""
+    doc = await db.campaigns.find_one({"_id": campaign_id})
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found.")
+
+    if doc.get("status") not in (CampaignStatus.DRAFT.value, CampaignStatus.READY.value, CampaignStatus.PAUSED.value):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot edit a launched or completed campaign.")
+
+    now = datetime.now(timezone.utc)
+    update_data = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    update_data["updated_at"] = now
+
+    await db.campaigns.update_one({"_id": campaign_id}, {"$set": update_data})
+    updated_doc = await db.campaigns.find_one({"_id": campaign_id})
+    return CampaignModel.from_mongo(updated_doc).model_dump()
+
+
+@router.post("/{campaign_id}/calculate-recipients")
+async def calculate_campaign_recipients(
+    campaign_id: str,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Calculates real-time net deliverable recipient count with exclusion and suppression breakdown."""
+    doc = await db.campaigns.find_one({"_id": campaign_id})
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found.")
+    campaign = CampaignModel.from_mongo(doc)
+    calc = await CampaignService.resolve_recipients(db, campaign)
+    return {
+        "raw_count": calc["raw_count"],
+        "suppressed_count": calc["suppressed_count"],
+        "excluded_count": calc["excluded_count"],
+        "final_count": calc["final_count"],
+    }
+
+
+@router.get("/{campaign_id}/preview")
+async def preview_campaign(
+    campaign_id: str,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Renders preview of campaign subject and HTML body with sample variables."""
+    doc = await db.campaigns.find_one({"_id": campaign_id})
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found.")
+    campaign = CampaignModel.from_mongo(doc)
+
+    tpl_doc = await db.email_templates.find_one({"key": campaign.template_key}) if campaign.template_key != "custom" else None
+    sample_vars = {
+        "name": "Sarah Connor",
+        "company": "Cyberdyne Systems",
+        "email": "sarah@cyberdyne.io",
+        "unsubscribe_url": "https://navigatte.com/unsubscribe?email=sarah@cyberdyne.io",
+        "service_interest": "Enterprise Security Architecture",
+        "start_time": "Aug 25, 2026, 2:00 PM UTC",
+        "meeting_url": "https://navigatte.com/meet/demo",
+    }
+
+    base_subject = campaign.subject or (tpl_doc.get("subject") if tpl_doc else "Navigatte Communication")
+    base_html = campaign.custom_html or (tpl_doc.get("body_html") if tpl_doc else "<p>Navigatte Campaign Content</p>")
+
+    from services.communications_service import CommunicationsService
+    rendered_subject = CommunicationsService.render_template(base_subject, sample_vars)
+    rendered_html = CommunicationsService.render_template(base_html, sample_vars)
+
+    return {
+        "subject": rendered_subject,
+        "html_body": rendered_html,
+        "sample_variables": sample_vars,
+    }
+
+
+@router.post("/{campaign_id}/duplicate")
+async def duplicate_campaign(
+    campaign_id: str,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Duplicates an existing campaign as a new DRAFT."""
+    doc = await db.campaigns.find_one({"_id": campaign_id})
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found.")
+    src = CampaignModel.from_mongo(doc)
+    now = datetime.now(timezone.utc)
+    new_camp = CampaignModel(
+        name=f"{src.name} (Copy)",
+        description=src.description,
+        environment=src.environment,
+        sender_email=src.sender_email,
+        reply_to=src.reply_to,
+        subject=src.subject,
+        template_key=src.template_key,
+        template_version=src.template_version,
+        audience_id=src.audience_id,
+        audience_source=src.audience_source,
+        manual_recipients=src.manual_recipients,
+        exclusions=src.exclusions,
+        custom_html=src.custom_html,
+        test_recipients=src.test_recipients,
+        status=CampaignStatus.DRAFT,
+        created_by=admin.email,
+        created_at=now,
+        updated_at=now,
+    )
+    await db.campaigns.insert_one(new_camp.to_mongo())
+    return new_camp.model_dump()
 
 
 @router.get("/{campaign_id}/validate")

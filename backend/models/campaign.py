@@ -30,6 +30,10 @@ class CampaignModel(BaseModel):
     template_key: str
     template_version: int = 1
     audience_id: Optional[str] = None
+    audience_source: str = "audience"  # 'newsletter' | 'manual' | 'both' | 'audience'
+    manual_recipients: List[str] = Field(default_factory=list)
+    exclusions: List[str] = Field(default_factory=list)  # Emails or domains to exclude e.g. '@navigatte.com'
+    custom_html: Optional[str] = None
     status: CampaignStatus = CampaignStatus.DRAFT
     test_recipients: List[EmailStr] = Field(default_factory=list)  # Hard boundary for test environment
     
@@ -66,6 +70,10 @@ class CampaignModel(BaseModel):
             "template_key": self.template_key,
             "template_version": self.template_version,
             "audience_id": self.audience_id,
+            "audience_source": self.audience_source,
+            "manual_recipients": self.manual_recipients,
+            "exclusions": self.exclusions,
+            "custom_html": self.custom_html,
             "status": self.status.value if isinstance(self.status, CampaignStatus) else str(self.status),
             "test_recipients": self.test_recipients,
             "total_recipients": self.total_recipients,
