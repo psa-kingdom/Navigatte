@@ -217,6 +217,8 @@ class MockDatabase:
         self.enquiries = MockCollection("enquiries")
         self.status_checks = MockCollection("status_checks")
         self.integration_webhook_events = MockCollection("integration_webhook_events")
+        self.email_templates = MockCollection("email_templates")
+        self.email_outbox = MockCollection("email_outbox")
 
     @property
     def name(self):

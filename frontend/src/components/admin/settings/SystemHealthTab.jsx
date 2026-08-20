@@ -113,6 +113,62 @@ export const SystemHealthTab = ({
     }
   };
 
+  const handleTestCalWebhook = async () => {
+    setTestingProvider("cal.com-webhook");
+    try {
+      const resp = await api.post("/admin/system/health/cal/test-webhook");
+      if (resp.data.success) {
+        toast({
+          title: "Webhook Verified",
+          description: resp.data.message,
+        });
+      } else {
+        toast({
+          variant: "destructive",
+          title: "Webhook Test Failed",
+          description: resp.data.message,
+        });
+      }
+      onRefresh();
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Test Error",
+        description: err.response?.data?.detail || err.message,
+      });
+    } finally {
+      setTestingProvider(null);
+    }
+  };
+
+  const handleTestResend = async () => {
+    setTestingProvider("resend");
+    try {
+      const resp = await api.post("/admin/system/health/resend/test");
+      if (resp.data.success) {
+        toast({
+          title: "Resend Connected",
+          description: resp.data.message,
+        });
+      } else {
+        toast({
+          variant: "destructive",
+          title: "Resend Test Failed",
+          description: resp.data.message,
+        });
+      }
+      onRefresh();
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Test Error",
+        description: err.response?.data?.detail || err.message,
+      });
+    } finally {
+      setTestingProvider(null);
+    }
+  };
+
   const overallStatus = healthData?.overall_status || "unknown";
   const overallBadge = STATUS_BADGES[overallStatus] || STATUS_BADGES.unknown;
 
@@ -273,14 +329,39 @@ export const SystemHealthTab = ({
                   )}
 
                   {item.provider === "cal.com" && (
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        onClick={handleTestCal}
+                        disabled={testingProvider === "cal.com"}
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-[11px] px-2 border-white/10 hover:bg-white/5 rounded-md"
+                      >
+                        {testingProvider === "cal.com" ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Zap className="w-3 h-3 mr-1 text-iris" />}
+                        API
+                      </Button>
+                      <Button
+                        onClick={handleTestCalWebhook}
+                        disabled={testingProvider === "cal.com-webhook"}
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-[11px] px-2 border-white/10 hover:bg-white/5 rounded-md"
+                      >
+                        {testingProvider === "cal.com-webhook" ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <CheckCircle2 className="w-3 h-3 mr-1 text-emerald-400" />}
+                        Webhook
+                      </Button>
+                    </div>
+                  )}
+
+                  {item.provider === "resend" && (
                     <Button
-                      onClick={handleTestCal}
-                      disabled={isTesting}
+                      onClick={handleTestResend}
+                      disabled={testingProvider === "resend"}
                       variant="outline"
                       size="sm"
                       className="h-7 text-[11px] px-2 border-white/10 hover:bg-white/5 rounded-md"
                     >
-                      {isTesting ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Zap className="w-3 h-3 mr-1 text-iris" />}
+                      {testingProvider === "resend" ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Zap className="w-3 h-3 mr-1 text-iris" />}
                       Test API
                     </Button>
                   )}

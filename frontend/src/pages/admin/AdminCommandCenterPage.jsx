@@ -7,6 +7,7 @@ import ProjectFormDialog from "@/components/admin/ProjectFormDialog";
 import StatsGrid from "@/components/admin/overview/StatsGrid";
 import EnquiriesCRM from "@/components/admin/enquiries/EnquiriesCRM";
 import AdminSettingsView from "@/components/admin/settings/AdminSettingsView";
+import CommunicationsCentre from "@/components/admin/communications/CommunicationsCentre";
 import api from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 
@@ -274,6 +275,11 @@ const AdminCommandCenterPage = () => {
           </motion.div>
         )}
         {activeTab === "projects" && <ProjectsTab />}
+        {activeTab === "communications" && (
+          <motion.div key="communications" variants={tabVariants} initial="hidden" animate="show" exit="exit">
+            <CommunicationsCentre />
+          </motion.div>
+        )}
         {activeTab === "settings" && (
           <motion.div key="settings" variants={tabVariants} initial="hidden" animate="show" exit="exit">
             <AdminSettingsView />

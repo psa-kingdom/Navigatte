@@ -49,9 +49,9 @@ export const ADMIN_NAV_SECTIONS = [
         id: "communications",
         label: "Communications",
         icon: Mail,
-        badge: "Phase 3",
-        status: "coming-soon",
-        description: "Email templates, campaigns, outbox & deliverability",
+        badge: "Studio",
+        status: "active",
+        description: "Transactional templates, outbox delivery & Resend telemetry",
       },
       {
         id: "analytics",

@@ -8,11 +8,16 @@ export const AppearanceTab = () => {
   return (
     <div className="space-y-8" data-testid="appearance-tab">
       <div>
-        <h2 className="text-xl font-display font-light text-cloud">
-          Appearance & Design System
-        </h2>
+        <div className="flex items-center gap-2">
+          <h2 className="text-xl font-display font-light text-cloud">
+            Appearance & Design System
+          </h2>
+          <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-white/10 text-fog border border-white/15">
+            Deferred — Future Visual Phase
+          </span>
+        </div>
         <p className="text-xs text-fog mt-1">
-          Select between two intentionally crafted visual aesthetics. Both themes feature semantic design tokens, high contrast, and accessibility compliance.
+          Theme architecture and visual styling are scheduled for a dedicated comprehensive visual & accessibility audit phase.
         </p>
       </div>
 

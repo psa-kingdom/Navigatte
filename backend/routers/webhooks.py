@@ -86,3 +86,64 @@ async def receive_cal_webhook(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal processing error during webhook ingestion",
         )
+
+
+@router.post("/resend")
+async def receive_resend_webhook(
+    request: Request,
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Public webhook ingestion endpoint for Resend delivery events (Svix).
+
+    Verifies the Svix HMAC-SHA256 signature, normalizes delivery/bounce/open events,
+    and updates the email outbox and CRM timeline.
+    """
+    from integrations.resend.provider import ResendCommunicationsProvider
+    from services.communications_service import CommunicationsService
+
+    resend_provider = ResendCommunicationsProvider()
+
+    raw_body = await request.body()
+    if not raw_body:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing request body",
+        )
+
+    headers_dict = dict(request.headers)
+    is_valid = resend_provider.verify_webhook_signature(raw_body, headers_dict)
+    if not is_valid:
+        logger.warning("Rejected unverified Resend webhook signature")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing Svix webhook signature",
+        )
+
+    try:
+        payload_dict = json.loads(raw_body.decode("utf-8"))
+    except Exception as e:
+        logger.error(f"Malformed JSON in Resend webhook: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Malformed JSON payload",
+        )
+
+    try:
+        service = CommunicationsService(provider=resend_provider)
+        result = await service.process_resend_webhook(
+            db=db,
+            payload=payload_dict,
+            headers=headers_dict,
+        )
+        return {
+            "success": True,
+            "status": result.get("status", "processed"),
+            "event_type": result.get("event_type"),
+            "idempotency_key": result.get("idempotency_key"),
+        }
+    except Exception as e:
+        logger.error(f"Error processing Resend webhook event: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal processing error during Resend webhook ingestion",
+        )

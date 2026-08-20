@@ -66,6 +66,90 @@ async def test_cal_connectivity(
         }
 
 
+@router.post("/health/cal/test-webhook", response_model=Dict[str, Any])
+async def test_cal_webhook_verification(
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Tests local Cal.com webhook signature verification pipeline with the configured secret."""
+    from core.config import settings
+    from integrations.cal.provider import CalSchedulingProvider
+    import hashlib
+    import hmac
+
+    secret = getattr(settings, "CAL_WEBHOOK_SECRET", None)
+    if not secret:
+        return {
+            "success": False,
+            "status": "unconfigured",
+            "message": "CAL_WEBHOOK_SECRET is not configured in Railway.",
+        }
+
+    provider = CalSchedulingProvider()
+    test_body = b'{"triggerEvent":"PING","payload":{"diagnostic":"verification"}}'
+    test_sig = hmac.new(secret.encode("utf-8"), test_body, hashlib.sha256).hexdigest()
+
+    is_valid = provider.verify_webhook_signature(
+        test_body,
+        {"x-cal-signature-256": test_sig},
+    )
+
+    return {
+        "success": is_valid,
+        "status": "verified" if is_valid else "signature_mismatch",
+        "message": "HMAC-SHA256 signature verification pipeline operational." if is_valid else "Signature calculation failed.",
+        "secret_length": len(secret),
+    }
+
+
+@router.post("/health/resend/test", response_model=Dict[str, Any])
+async def test_resend_connectivity(
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Live test of outbound Resend API connection."""
+    from core.config import settings
+    import httpx
+
+    api_key = getattr(settings, "RESEND_API_KEY", None)
+    if not api_key:
+        return {
+            "success": False,
+            "status": "unconfigured",
+            "message": "RESEND_API_KEY is not configured in Railway.",
+        }
+
+    start_t = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                "https://api.resend.com/api-keys",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            latency_ms = round((time.perf_counter() - start_t) * 1000, 2)
+            if resp.status_code in (200, 403):
+                return {
+                    "success": True,
+                    "status": "connected",
+                    "latency_ms": latency_ms,
+                    "message": f"Connected to Resend API ({latency_ms}ms).",
+                }
+            return {
+                "success": False,
+                "status": "auth_error",
+                "latency_ms": latency_ms,
+                "message": f"Resend API error: HTTP {resp.status_code}",
+            }
+    except Exception as e:
+        latency_ms = round((time.perf_counter() - start_t) * 1000, 2)
+        return {
+            "success": False,
+            "status": "error",
+            "latency_ms": latency_ms,
+            "message": f"Connection error: {str(e)}",
+        }
+
+
 @router.post("/health/database/test", response_model=Dict[str, Any])
 async def test_database_connectivity(
     admin: AdminUser = Depends(get_current_admin),

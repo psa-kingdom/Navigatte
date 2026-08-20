@@ -117,7 +117,18 @@ The platform is deployed as a decoupled monorepo:
   - **Obsidian Theme**: Space-black (`#08080C`), graphite surfaces (`#14141E`), elevated luminance, iris glow.
   - **Editorial Theme**: High-contrast porcelain (`#FBFBFD`), pure-white card surfaces (`#FFFFFF`), charcoal typography (`#0A0A10`), royal indigo accents.
 - **Semantic CSS Token System**: `--app-bg`, `--surface-card`, `--surface-elevated`, `--surface-muted`, `--border-subtle`, `--text-primary`, `--text-secondary`, `--status-healthy`, `--status-degraded`, `--status-error`.
-- **`ThemeContext.jsx`**: Reactive context applying `data-theme` attribute and persisting selection in `localStorage`.
+### J. Communications Studio & Outbox Engine (Phase 3 Complete)
+- **Database & Domain Models (`models/communications.py`)**:
+  - `EmailTemplateModel`: System templates with variable schemas (`enquiry_acknowledgement`, `consultation_booking_confirmation`, `consultation_rescheduled`, `consultation_cancelled`).
+  - `OutboxItemModel`: Durable outbox records with status progression (`queued`, `sending`, `sent`, `delivered`, `bounced`, `failed`, `opened`, `clicked`).
+- **Transactional Dispatch & Inbound Webhooks (`services/communications_service.py`)**:
+  - `send_transactional_email`: Queues outbox item, renders variables, dispatches via `ResendCommunicationsProvider`, and correlates with CRM Enquiry timeline.
+  - `process_resend_webhook`: Ingests Svix-signed Resend delivery events (`email.delivered`, `email.bounced`, `email.opened`), updates Outbox status, and appends concise timeline activities to matched leads.
+- **Admin Communications Centre UI (`CommunicationsCentre.jsx`)**:
+  - Overview KPI metrics (Total Dispatches, Delivery Rate, Open Rate, Bounces).
+  - Outbox inspection table with search, status filtering, and rendered HTML preview modal.
+  - Template library with variable schemas.
+  - Direct live test email sender (`POST /api/admin/communications/send-test`).
 
 ---
 
@@ -146,29 +157,32 @@ PHASE 2C: Scheduling Integration & Provider Abstraction (COMPLETE)
 ├── Public "Book A Call" Lead Qualification Modal Flow (BookCallModal)
 └── Admin Profile Dropdown Component (AdminProfileDropdown)
 
-PHASE 2B: Admin UX & Control Centre Evolution (IN PROGRESS)
+PHASE 2B: Admin UX & Control Centre Evolution (COMPLETE)
 ├── [P1 / Task A] Global Admin Action/Search Bar (COMPLETE — commit 4e1387b)
 ├── [P1 / Control Centre] Admin System Health & Integrations Centre (COMPLETE — AdminSettingsView)
-├── [P2 / Task B] Dual-Theme Semantic Design Token System (COMPLETE — Obsidian & Editorial)
-├── [P3 / Task C] Restrained Flow Field Background System (NEXT CANDIDATE)
-│   └── Dependencies: Theme Tokens, prefers-reduced-motion support, canvas rendering
-├── [P3 / Task D] Bento-Grid Command Center (PLANNED)
-│   └── Dependencies: Theme Tokens, Phase 2A metrics, modular card components
-└── [P3 / Task E] Spotlight Module Cards (PLANNED)
-    └── Dependencies: Task D Bento layout, design token alignment
+├── [P1 / Test Actions] Real Diagnostic & Webhook Verification Test Actions (COMPLETE)
+└── [P2 / Tokens] Dual-Theme Semantic Design Token Foundation (COMPLETE)
 
-PHASE 3: Communications Studio & Email Engine (FOUNDATION ESTABLISHED)
+PHASE 3: Communications Studio & Email Engine (COMPLETE)
 ├── [P1] Communications Provider Contract & Resend Adapter (COMPLETE — commit a5366ea)
-├── [P3] Email Template Engine & Transactional Outbox (PLANNED)
-├── [P3] Webhook Ingestion Router & Delivery Tracking (PLANNED)
-└── [P4] Audience & Subscriber Campaign Management (PLANNED)
+├── [P1] Transactional Outbox & Template Library (COMPLETE — CommunicationsService)
+├── [P1] Resend Inbound Webhook Ingestion & Delivery Tracking (COMPLETE — POST /api/webhooks/resend)
+├── [P1] CRM ↔ Communications Activity Timeline Sync (COMPLETE)
+└── [P1] Communications Studio Admin UI (COMPLETE — CommunicationsCentre.jsx)
+
+PHASE: UI/UX + VISUAL DESIGN SYSTEM (EXPLICITLY DEFERRED / FUTURE PHASE)
+├── Dual-Theme Appearance Toggle Refinement (Obsidian & Editorial)
+├── Restrained Flow Field Background System
+├── Bento Grid Command Center Layout
+├── Spotlight Module Cards
+└── Systematic Spacing, Typography & Motion Audit
 ```
 
 ---
 
 ## 6. Verification Summary
 
-- **Backend Pytest Suite**: **50 passed / 0 failed / 19 skipped** (100% pass rate across auth, security, projects, enquiries, CORS, Cal.com webhooks, qualification flows, startup isolation, global search, Resend adapter, and system health endpoints).
-- **Frontend Build**: **Compiled successfully** (`npx craco build` — 0 errors, 0 warnings, 388.84 kB gzipped JS).
-- **Deployment Smoke Test**: **PASS** (CORS preflights, authenticated session flows, search endpoints, and webhook ingestion).
+- **Backend Pytest Suite**: **55 passed / 0 failed / 19 skipped** (100% pass rate across auth, security, projects, enquiries, CORS, Cal.com webhooks, qualification flows, startup isolation, global search, Resend adapter, system health, and communications outbox engine).
+- **Frontend Build**: **Compiled successfully** (`npx craco build` — 0 errors, 0 warnings, 392.33 kB gzipped JS).
+- **Deployment Smoke Test**: **PASS** (CORS preflights, authenticated session flows, search endpoints, communications overview, and webhook ingestion).
 - **Git State**: Clean working tree on `main` branch, synced with `origin/main` and `origin/test`.
