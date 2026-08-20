@@ -37,6 +37,13 @@ class Settings:
     COOKIE_SAMESITE: Optional[str] = os.getenv("COOKIE_SAMESITE")
     COOKIE_SECURE: Optional[str] = os.getenv("COOKIE_SECURE")
 
+    # Cal.com Scheduling Integration
+    CAL_ENABLED: bool = os.getenv("CAL_ENABLED", "false").lower() in ("true", "1", "yes")
+    CAL_API_KEY: Optional[str] = os.getenv("CAL_API_KEY")
+    CAL_WEBHOOK_SECRET: Optional[str] = os.getenv("CAL_WEBHOOK_SECRET")
+    CAL_EVENT_TYPE_ID: Optional[str] = os.getenv("CAL_EVENT_TYPE_ID")
+    CAL_WEBHOOK_SUBSCRIBER_URL: Optional[str] = os.getenv("CAL_WEBHOOK_SUBSCRIBER_URL")
+
     @property
     def JWT_SECRET(self) -> str:
         if self._raw_jwt_secret:

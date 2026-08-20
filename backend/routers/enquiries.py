@@ -49,10 +49,13 @@ async def admin_get_stats(
 
 
 async def _resolve_stats(db: AsyncIOMotorDatabase, pipeline_statuses: list) -> tuple:
-    """Helper to resolve stats counts — separated for testability."""
-    enquiries_new = await db.enquiries.count_documents({"status": EnquiryStatus.NEW.value})
+    """Helper to resolve stats counts — separated for testability.
+    Excludes diagnostic / test leads so real business metrics stay accurate."""
+    enquiries_new = await db.enquiries.count_documents(
+        {"status": EnquiryStatus.NEW.value, "is_test": {"$ne": True}}
+    )
     enquiries_pipeline = await db.enquiries.count_documents(
-        {"status": {"$in": pipeline_statuses}}
+        {"status": {"$in": pipeline_statuses}, "is_test": {"$ne": True}}
     )
     projects_total = await db.projects.count_documents({})
     projects_published = await db.projects.count_documents({"status": ProjectStatus.PUBLISHED.value})
@@ -75,6 +78,10 @@ async def submit_enquiry(
         return EnquiryPublicResponse()
 
     data = payload.model_dump(exclude={"website_hp"})
+    # Classify diagnostic test leads
+    if payload.email.lower().startswith("rca_verification_test@"):
+        data["is_test"] = True
+
     enquiry = Enquiry(**data)
     await db.enquiries.insert_one(enquiry.to_mongo())
 

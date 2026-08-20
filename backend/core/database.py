@@ -59,6 +59,18 @@ async def init_db_indexes():
         # Enquiries
         await db.enquiries.create_index([("status", 1), ("created_at", -1)])
         await db.enquiries.create_index("email")
+        await db.enquiries.create_index([("is_test", 1), ("status", 1)])
+
+        # Integration Webhook Events (Idempotency & Auditing)
+        await db.integration_webhook_events.create_index("idempotency_key", unique=True)
+        await db.integration_webhook_events.create_index([("provider", 1), ("received_at", -1)])
+        await db.integration_webhook_events.create_index("external_booking_uid")
+
+        # Classify existing RCA diagnostic lead as test data if present
+        await db.enquiries.update_many(
+            {"email": {"$regex": "^rca_verification_test@", "$options": "i"}},
+            {"$set": {"is_test": True}},
+        )
 
         logger.info("Database indexes initialized successfully.")
     except Exception as e:

@@ -1,9 +1,11 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import {
   X, Mail, Phone, Copy, Check, Building2, MessageSquare,
-  Clock, ChevronDown, Plus, Loader2, Tag,
+  Clock, ChevronDown, Plus, Loader2, Tag, Calendar,
+  ExternalLink, Video, CheckCircle2, AlertCircle, RefreshCw,
+  XCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -23,6 +25,14 @@ const STATUS_CONFIG = {
   qualified: { label: "Qualified", color: "bg-periwinkle/15 text-periwinkle border-periwinkle/25" },
   converted: { label: "Converted", color: "bg-emerald-500/15 text-emerald-400 border-emerald-500/25" },
   closed: { label: "Closed", color: "bg-white/5 text-ash border-white/10" },
+};
+
+const SCHEDULING_STATUS_CONFIG = {
+  booked: { label: "Call Booked", color: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30", icon: Calendar },
+  rescheduled: { label: "Rescheduled", color: "bg-signal/15 text-signal border-signal/30", icon: RefreshCw },
+  cancelled: { label: "Cancelled", color: "bg-rose-500/15 text-rose-400 border-rose-500/30", icon: XCircle },
+  completed: { label: "Completed", color: "bg-iris/15 text-iris border-iris/30", icon: CheckCircle2 },
+  no_show: { label: "No Show", color: "bg-white/5 text-fog border-white/10", icon: AlertCircle },
 };
 
 const PIPELINE_ORDER = ["new", "contacted", "qualified", "converted", "closed"];
@@ -183,7 +193,7 @@ function NoteComposer({ lead, onNoteAdded }) {
   );
 }
 
-// Main LeadDrawer component with Portal mounting
+// Main LeadDrawer component with Portal mounting and Activity Timeline
 const LeadDrawer = ({ lead: initialLead, onClose, onLeadUpdated }) => {
   const [lead, setLead] = useState(initialLead);
 
@@ -196,6 +206,44 @@ const LeadDrawer = ({ lead: initialLead, onClose, onLeadUpdated }) => {
     setLead(updated);
     onLeadUpdated?.(updated);
   }, [onLeadUpdated]);
+
+  const booking = lead?.booking;
+  const schedulingCfg = SCHEDULING_STATUS_CONFIG[lead?.scheduling_status || booking?.status] || null;
+
+  // Combine internal notes and activities into a unified chronological feed
+  const timelineItems = useMemo(() => {
+    const items = [];
+
+    if (lead?.notes) {
+      lead.notes.forEach((n) => {
+        items.push({
+          id: `note-${n.id}`,
+          kind: "note",
+          date: new Date(n.created_at),
+          title: n.created_by,
+          text: n.text,
+          raw: n,
+        });
+      });
+    }
+
+    if (lead?.activities) {
+      lead.activities.forEach((a) => {
+        items.push({
+          id: `activity-${a.id}`,
+          kind: "activity",
+          date: new Date(a.timestamp),
+          title: a.title,
+          summary: a.summary,
+          type: a.type,
+          source: a.source,
+          raw: a,
+        });
+      });
+    }
+
+    return items.sort((a, b) => b.date - a.date);
+  }, [lead?.notes, lead?.activities]);
 
   if (!lead) return null;
 
@@ -231,9 +279,16 @@ const LeadDrawer = ({ lead: initialLead, onClose, onLeadUpdated }) => {
         {/* Header */}
         <div className="flex items-start justify-between gap-4 p-6 border-b border-white/10 flex-shrink-0">
           <div className="min-w-0">
-            <h2 className="text-lg font-display font-light text-cloud truncate" data-testid="lead-drawer-name">
-              {lead.name}
-            </h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-display font-light text-cloud truncate" data-testid="lead-drawer-name">
+                {lead.name}
+              </h2>
+              {lead.is_test && (
+                <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/25">
+                  Test Lead
+                </span>
+              )}
+            </div>
             {lead.company && (
               <div className="flex items-center gap-1.5 mt-0.5">
                 <Building2 className="w-3 h-3 text-fog flex-shrink-0" />
@@ -262,6 +317,46 @@ const LeadDrawer = ({ lead: initialLead, onClose, onLeadUpdated }) => {
               {formatDate(lead.created_at)}
             </div>
           </div>
+
+          {/* Scheduled Booking Card (if present) */}
+          {booking && (
+            <div className="p-4 rounded-lg bg-graphite/40 border border-white/10 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Calendar className="w-4 h-4 text-emerald-400" />
+                  <span className="text-xs font-semibold text-cloud">Scheduled Consultation</span>
+                </div>
+                {schedulingCfg && (
+                  <span className={`text-[10px] font-medium border rounded px-2 py-0.5 ${schedulingCfg.color}`}>
+                    {schedulingCfg.label}
+                  </span>
+                )}
+              </div>
+
+              <div className="space-y-1 text-xs">
+                <p className="text-cloud font-medium">{booking.event_title || "Consultation Call"}</p>
+                {booking.scheduled_start && (
+                  <p className="text-fog">
+                    {formatDateTime(booking.scheduled_start)}
+                    {booking.timezone && ` (${booking.timezone})`}
+                  </p>
+                )}
+              </div>
+
+              {booking.meeting_url && (
+                <a
+                  href={booking.meeting_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-iris hover:text-iris/80 transition-colors pt-1"
+                >
+                  <Video className="w-3.5 h-3.5" />
+                  Join Video Session
+                  <ExternalLink className="w-3 h-3 ml-0.5" />
+                </a>
+              )}
+            </div>
+          )}
 
           {/* Contact info */}
           <div className="space-y-2">
@@ -295,30 +390,39 @@ const LeadDrawer = ({ lead: initialLead, onClose, onLeadUpdated }) => {
             </p>
           </div>
 
-          {/* Notes */}
+          {/* Timeline & Notes Feed */}
           <div className="space-y-3">
             <p className="text-xs font-medium text-fog uppercase tracking-wider">
-              Internal Notes {lead.notes?.length > 0 && `(${lead.notes.length})`}
+              Activity Timeline & Notes {timelineItems.length > 0 && `(${timelineItems.length})`}
             </p>
 
-            {lead.notes && lead.notes.length > 0 ? (
+            {timelineItems.length > 0 ? (
               <div className="space-y-2.5">
-                {[...lead.notes].reverse().map((note) => (
+                {timelineItems.map((item) => (
                   <div
-                    key={note.id}
-                    className="bg-graphite/40 border border-white/8 rounded-lg p-3 space-y-1.5"
+                    key={item.id}
+                    className={`rounded-lg p-3 space-y-1.5 border ${
+                      item.kind === "activity"
+                        ? "bg-iris/5 border-iris/20"
+                        : "bg-graphite/40 border-white/8"
+                    }`}
                   >
-                    <p className="text-sm text-cloud leading-relaxed">{note.text}</p>
-                    <div className="flex items-center gap-2 text-xs text-fog">
-                      <span>{note.created_by}</span>
-                      <span>·</span>
-                      <span>{formatDateTime(note.created_at)}</span>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={`text-xs font-medium ${item.kind === "activity" ? "text-iris" : "text-fog"}`}>
+                        {item.title}
+                      </span>
+                      <span className="text-[11px] text-fog font-mono">
+                        {formatDateTime(item.date)}
+                      </span>
                     </div>
+                    <p className="text-sm text-cloud leading-relaxed">
+                      {item.kind === "activity" ? item.summary : item.text}
+                    </p>
                   </div>
                 ))}
               </div>
             ) : (
-              <p className="text-sm text-fog italic">No notes yet.</p>
+              <p className="text-sm text-fog italic">No activity recorded yet.</p>
             )}
 
             <NoteComposer lead={lead} onNoteAdded={handleNoteAdded} />

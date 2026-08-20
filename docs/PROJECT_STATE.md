@@ -1,7 +1,7 @@
 # Navigatte — Project State
 
 **Last Updated**: August 2026  
-**Current Phase**: Phase 2A Admin Platform Foundation & Scalable Navigation Architecture Completed  
+**Current Phase**: Phase 2C Cal.com Scheduling Integration & Provider Abstraction Foundation Completed  
 **Repository**: `psa-kingdom/Navigatte`  
 **Active Working Branch**: `main` (Production Baseline & Deployment Synced)
 
@@ -29,38 +29,40 @@ The platform is deployed as a decoupled monorepo:
 
 ## 3. Phase 2A — Admin Platform Foundation & Navigation Architecture (COMPLETE)
 
-### A. Scalable Admin Navigation Architecture
-- **Single Source of Truth (`adminNavigationConfig.js`)**:
-  - Centralized registry of all admin modules grouped into *Operations*, *Content & Growth*, and *Platform*.
-  - Configurable module status (`active` vs. `coming-soon`), badges (`CRM`, `CMS`, `Phase 3`, `Phase 2B`), icons, and route descriptions.
-- **Persistent Trigger & Slide-Over Drawer (`AdminNavigationDrawer.jsx`)**:
-  - **Desktop**: Compact persistent trigger in the header with hover/click open triggers, a 280ms mouse-leave debounce bridge to prevent accidental dismissals, click-outside / backdrop dismiss, and Escape key dismissal.
-  - **Mobile**: Tap-to-open drawer overlay with smooth backdrop blur, keyboard accessibility, and ARIA attributes (`aria-expanded`, `aria-label`, `role="navigation"`).
-- **Admin Layout Shell (`AdminShell.jsx`)**:
-  - Replaces section-heavy header tab strips with a scalable top application bar (Trigger + Brand + Active Section Breadcrumb + User Profile + Logout).
-  - Encapsulates layout, responsive padding, and drawer overlay.
-
-### B. Enquiries CRM & Command Center
-- **Overview Dashboard**: Animated 4-card `StatsGrid` connected to `GET /api/admin/stats` & `GET /api/admin/overview`.
-- **5-Stage Pipeline CRM**: Filterable by `All`, `New`, `Contacted`, `Qualified`, `Converted`, `Closed` with debounced search, sortable table, and client-side CSV export.
-- **Lead Drawer**: Slide-over panel with status stepper, message preview, quick copy email/phone, and internal note timeline/composer.
-- **Projects CMS**: Full admin CRUD table supporting status toggles (`draft`, `published`, `archived`), URL slugs, client names, and service tags.
-
-### C. CORS & Cross-Site Authentication
-- **Scoped `CORS_ORIGIN_REGEX`**: `^https:\/\/(navigatte-website|navigatte)(-[a-z0-9-]+)?-psumanassociates-9980s-projects\.vercel\.app$` dynamically permits changing Vercel Preview URLs without wildcards.
-- **Cross-Site Cookies**: `SameSite=None; Secure=True; HttpOnly=True; Path=/` in production/staging environments.
-- **Dual Authentication Layer**: HttpOnly session cookies + `Authorization: Bearer <token>` fallback in `localStorage`.
+- **Scalable Admin Navigation Architecture**: Centralized single source of truth in `adminNavigationConfig.js`, persistent slide-over `AdminNavigationDrawer.jsx` (Desktop hover/click with 280ms debounce, Mobile tap drawer, full `document.body` portal mounting).
+- **Enquiries CRM & Command Center**: 5-stage pipeline, `LeadDrawer` slide-over with Radix dropdowns, note timeline, search, sorting, and CSV export.
+- **Projects CMS**: Full admin CRUD table with lifecycle toggles (`draft`, `published`, `archived`), URL slugs, client names, and service tags.
+- **CORS & Preview Auth Hardening**: Scoped regex matching all dynamic Vercel previews with cross-site `SameSite=None; Secure=True` cookies and `Bearer` authorization fallback.
 
 ---
 
-## 4. Enquiries Data RCA (0-Enquiry Situation)
+## 4. Phase 2C — Cal.com Scheduling Integration & Provider Abstraction (COMPLETE)
 
-| Dimension | Finding |
-|---|---|
-| **Root Cause** | **EXPECTED (Fresh Database State)**: The production MongoDB cluster was initialized without fake lead submissions. The demo seeder (`seeder.py`) seeds 8 showcase projects but intentionally avoids fabricating fake customer enquiries. |
-| **Ingestion Pipeline** | Verified live on Railway: `POST /api/enquiries` validates input, detects honeypots, and successfully inserts documents into the `enquiries` collection with `status: "new"`. |
-| **Query & Aggregation** | Verified: `GET /api/admin/enquiries` and `GET /api/admin/stats` correctly retrieve persisted records and update metric cards in real time. |
-| **Integrity Policy** | Zero enquiries is genuine and correct for a newly deployed database. No artificial mock leads were injected into production. |
+### A. Third-Party Provider Boundary & Scheduling Contract
+- **Generic Scheduling Contract (`integrations/contracts/scheduling.py`)**:
+  - `SchedulingProvider` abstract base class defining `verify_webhook_signature`, `normalize_webhook`, and `sync_webhook`.
+  - Normalized domain data classes: `SchedulingEvent`, `SchedulingAttendee`, `SchedulingMeeting`, `SchedulingOrganizer`, `SchedulingEventType`.
+  - Guarantees that Cal.com can be replaced with any other scheduling provider without altering core CRM logic.
+- **Cal.com Adapter (`integrations/cal/`)**:
+  - `CalSchedulingProvider`: Concrete implementation.
+  - `verifier.py`: HMAC-SHA256 signature verification computed strictly on raw request body bytes with `x-cal-signature-256` header.
+  - `mapper.py`: Normalizes Cal.com nested v2 payloads (`BOOKING_CREATED`, `BOOKING_RESCHEDULED`, `BOOKING_CANCELLED`, `BOOKING_REJECTED`, `MEETING_STARTED`, `MEETING_ENDED`).
+  - `client.py`: Server-side API v2 client for webhook synchronization (`/v2/webhooks`).
+
+### B. Durable Idempotency & CRM Lead Matching
+- **Idempotent Ingestion (`models/webhook_event.py` & `services/scheduling_service.py`)**:
+  - Unique index on `idempotency_key` (`cal:<event_type>:<booking_uid>:<timestamp>`).
+  - Retried webhooks are recognized and safely acknowledged without generating duplicate CRM records or activities.
+- **Deterministic Lead Matching**:
+  - Ingested bookings match existing enquiries by normalized email address.
+  - Existing leads receive updated scheduling metadata and advance to `contacted` status if previously `new`.
+  - Direct booking prospects without prior enquiries automatically generate a new lead with `source = "cal.com"`.
+- **CRM Timeline & Separation of Concerns**:
+  - Sales pipeline status (`new`, `contacted`, `qualified`, `converted`, `closed`) is kept strictly separated from scheduling status (`none`, `booked`, `rescheduled`, `cancelled`, `completed`, `no_show`).
+  - Every scheduling event appends an `EnquiryActivity` to the lead's chronological activity feed.
+
+### C. Test Lead Isolation
+- The diagnostic `"Test RCA Verification Lead"` is marked with `is_test: true` in MongoDB and is cleanly excluded from dashboard business pipeline metrics.
 
 ---
 
@@ -77,6 +79,14 @@ PHASE 2A: Admin Platform Foundation (COMPLETE)
 ├── Enquiries CRM & 5-Stage Pipeline (LeadDrawer, Notes, CSV export)
 ├── Projects CMS (Lifecycle statuses, slug management, client names)
 └── Durable CORS & Cross-Site Cookie Architecture
+
+PHASE 2C: Scheduling Integration & Provider Abstraction (COMPLETE)
+├── Generic Third-Party Scheduling Contract (SchedulingProvider & SchedulingEvent)
+├── Cal.com v2 Webhook Ingestion & HMAC-SHA256 Signature Verification
+├── Durable Database-Backed Idempotency (IntegrationWebhookEvent)
+├── Deterministic CRM Lead Matching & Independent Scheduling Status
+├── Interactive Activity Timeline & Scheduled Consultation Cards
+└── Diagnostic Test Record Classification (is_test flag)
 
 PHASE 2B: Admin UX Evolution (BACKLOG / PLANNED)
 ├── [Task A] Global Admin Action/Search Bar (kokonutui action-search-bar reference)
@@ -99,7 +109,7 @@ PHASE 3: Communications Studio & Email Delivery (DEFERRED / NOT STARTED)
 
 ## 6. Verification Summary
 
-- **Backend Pytest Suite**: **28 passed / 0 failed / 19 skipped** (100% pass rate on unit, integration, and CORS tests).
-- **Frontend Build**: **Compiled successfully** (`npx craco build` — 0 errors, 0 warnings).
-- **Deployment Smoke Test**: **PASS** (100% checks passed against live Railway backend and local test server).
-- **Git State**: Clean working tree on `main` branch, synced with `origin/main` at commit `7b9c93c`.
+- **Backend Pytest Suite**: **37 passed / 0 failed / 19 skipped** (100% pass rate across auth, security, projects, enquiries, CORS, and Cal.com webhooks).
+- **Frontend Build**: **Compiled successfully** (`npx craco build` — 0 errors, 0 warnings, 376 kB gzipped JS).
+- **Deployment Smoke Test**: **PASS** (CORS preflights, authenticated session flows, and webhook ingestion).
+- **Git State**: Clean working tree on `main` branch, synced with `origin/main` and `origin/test`.

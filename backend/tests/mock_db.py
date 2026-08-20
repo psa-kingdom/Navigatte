@@ -19,8 +19,22 @@ class MockCursor:
                 self.docs.sort(key=lambda d: (d.get(key) is None, d.get(key, "")), reverse=reverse)
         return self
 
+    def limit(self, count):
+        self.docs = self.docs[:count]
+        return self
+
+    def skip(self, count):
+        self.docs = self.docs[count:]
+        return self
+
     async def to_list(self, length=1000):
         return [dict(d) for d in self.docs[:length]]
+
+
+class MockInsertResult:
+    def __init__(self, inserted_id):
+        self.inserted_id = inserted_id
+        self.upserted_id = inserted_id
 
 
 class MockUpdateResult:
@@ -84,6 +98,14 @@ class MockCollection:
                     if doc_val in nin_vals or str(doc_val) in [str(v) for v in nin_vals]:
                         return False
                     continue
+                if "$ne" in val:
+                    doc_val = doc.get(key)
+                    if hasattr(doc_val, "value"):
+                        doc_val = doc_val.value
+                    ne_val = val["$ne"]
+                    if doc_val == ne_val:
+                        return False
+                    continue
 
             doc_val = doc.get(key)
             # Unwrap Enum values if present
@@ -133,7 +155,7 @@ class MockCollection:
         if "_id" not in d:
             d["_id"] = ObjectId()
         self.docs.append(d)
-        return MockUpdateResult(1, 1, d["_id"])
+        return MockInsertResult(d["_id"])
 
     async def insert_many(self, docs):
         for doc in docs:
@@ -175,6 +197,17 @@ class MockCollection:
         self.docs = [d for d in self.docs if not self._matches(d, query)]
         return MockDeleteResult(initial_len - len(self.docs))
 
+    async def update_many(self, query, update):
+        count = 0
+        for i, d in enumerate(self.docs):
+            if self._matches(d, query):
+                if "$set" in update:
+                    for k, v in update["$set"].items():
+                        d[k] = v
+                self.docs[i] = d
+                count += 1
+        return MockUpdateResult(count, count)
+
 
 class MockDatabase:
     def __init__(self):
@@ -183,6 +216,7 @@ class MockDatabase:
         self.projects = MockCollection("projects")
         self.enquiries = MockCollection("enquiries")
         self.status_checks = MockCollection("status_checks")
+        self.integration_webhook_events = MockCollection("integration_webhook_events")
 
     def __getitem__(self, name):
         if not hasattr(self, name):

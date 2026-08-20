@@ -244,9 +244,21 @@ const EnquiriesCRM = ({ initialTab = "all" }) => {
                 >
                   {/* Name + email */}
                   <div className="min-w-0">
-                    <p className="text-sm font-medium text-cloud group-hover:text-pure truncate transition-colors">
-                      {lead.name}
-                    </p>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <p className="text-sm font-medium text-cloud group-hover:text-pure truncate transition-colors">
+                        {lead.name}
+                      </p>
+                      {lead.scheduling_status === "booked" && (
+                        <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400 font-mono bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded">
+                          <Calendar className="w-2.5 h-2.5" /> Booked
+                        </span>
+                      )}
+                      {lead.is_test && (
+                        <span className="text-[9px] font-mono px-1 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/25">
+                          TEST
+                        </span>
+                      )}
+                    </div>
                     <p className="text-xs text-fog truncate mt-0.5">{lead.email}</p>
                   </div>
 
