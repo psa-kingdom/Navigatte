@@ -80,6 +80,16 @@ The platform is deployed as a decoupled monorepo:
 - **Admin Profile UI (`AdminProfileDropdown.jsx`)**:
   - Replaced static text with an accessible Radix `DropdownMenu` profile badge with avatar initials, role display (`Administrator`), session state, and accessible logout trigger.
 
+### F. Global Admin Action & Search Bar (Phase 2B — Task A)
+- **Backend Search Endpoint (`GET /api/admin/search`)**:
+  - Scoped, authenticated, low-latency search across CRM enquiries (name, email, company, service interest) and projects (title, client, slug, tags).
+  - Strictly isolates `is_test: true` diagnostic leads and bounds result sizes.
+- **Global Command Overlay (`GlobalAdminSearch.jsx`)**:
+  - Inspired by KokonutUI Action Search Bar with `Cmd/Ctrl + K` global hotkey and keyboard navigation.
+  - Multi-entity grouping: Navigation modules, Quick Actions, CRM Enquiries, and Projects CMS.
+- **Header Trigger (`AdminSearchTrigger.jsx`)**:
+  - Responsive search trigger integrated into `AdminShell.jsx` (desktop shortcut badge and mobile icon trigger).
+
 ---
 
 ## 5. Master Roadmap & Dependency Hierarchy
@@ -107,14 +117,13 @@ PHASE 2C: Scheduling Integration & Provider Abstraction (COMPLETE)
 ├── Public "Book A Call" Lead Qualification Modal Flow (BookCallModal)
 └── Admin Profile Dropdown Component (AdminProfileDropdown)
 
-PHASE 2B: Admin UX Evolution (BACKLOG / PLANNED)
-├── [Task A] Global Admin Action/Search Bar (kokonutui action-search-bar reference)
-│   └── Dependencies: adminNavigationConfig, searchable entity schemas, permissions
-├── [Task B] Restrained Flow Field Background System (kokonutui flow-field reference)
+PHASE 2B: Admin UX Evolution (IN PROGRESS)
+├── [Task A] Global Admin Action/Search Bar (COMPLETE — GlobalAdminSearch & GET /api/admin/search)
+├── [Task B] Restrained Flow Field Background System (PLANNED)
 │   └── Dependencies: foreground contrast audit, prefers-reduced-motion support
-├── [Task C] Bento-Grid Command Center (kokonutui bento-grid reference)
+├── [Task C] Bento-Grid Command Center (PLANNED)
 │   └── Dependencies: Phase 2A metrics, modular card components
-└── [Task D] Spotlight Module Cards (kokonutui spotlight-cards reference)
+└── [Task D] Spotlight Module Cards (PLANNED)
     └── Dependencies: Bento layout, design token alignment
 
 PHASE 3: Communications Studio & Email Delivery (DEFERRED / NOT STARTED)
@@ -128,7 +137,7 @@ PHASE 3: Communications Studio & Email Delivery (DEFERRED / NOT STARTED)
 
 ## 6. Verification Summary
 
-- **Backend Pytest Suite**: **40 passed / 0 failed / 19 skipped** (100% pass rate across auth, security, projects, enquiries, CORS, Cal.com webhooks, qualification flows, and startup isolation).
-- **Frontend Build**: **Compiled successfully** (`npx craco build` — 0 errors, 0 warnings, 379 kB gzipped JS).
+- **Backend Pytest Suite**: **42 passed / 0 failed / 19 skipped** (100% pass rate across auth, security, projects, enquiries, CORS, Cal.com webhooks, qualification flows, startup isolation, and global search).
+- **Frontend Build**: **Compiled successfully** (`npx craco build` — 0 errors, 0 warnings, 381.61 kB gzipped JS).
 - **Deployment Smoke Test**: **PASS** (CORS preflights, authenticated session flows, and webhook ingestion).
 - **Git State**: Clean working tree on `main` branch, synced with `origin/main` and `origin/test`.
