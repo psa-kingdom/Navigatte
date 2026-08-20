@@ -218,6 +218,15 @@ class MockDatabase:
         self.status_checks = MockCollection("status_checks")
         self.integration_webhook_events = MockCollection("integration_webhook_events")
 
+    @property
+    def name(self):
+        return "mock_navigatte_test_db"
+
+    async def command(self, command_name, *args, **kwargs):
+        if command_name == "ping":
+            return {"ok": 1.0}
+        return {"ok": 1.0}
+
     def __getitem__(self, name):
         if not hasattr(self, name):
             setattr(self, name, MockCollection(name))

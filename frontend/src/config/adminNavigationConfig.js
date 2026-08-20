@@ -68,11 +68,11 @@ export const ADMIN_NAV_SECTIONS = [
     items: [
       {
         id: "settings",
-        label: "Settings",
+        label: "Settings & Health",
         icon: Settings,
-        badge: "Phase 2B",
-        status: "coming-soon",
-        description: "Admin user access, CORS rules & security audit",
+        badge: "Control Centre",
+        status: "active",
+        description: "Integrations, system diagnostics, appearance & admin security",
       },
     ],
   },

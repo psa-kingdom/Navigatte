@@ -6,6 +6,7 @@ import AdminShell from "@/components/admin/layout/AdminShell";
 import ProjectFormDialog from "@/components/admin/ProjectFormDialog";
 import StatsGrid from "@/components/admin/overview/StatsGrid";
 import EnquiriesCRM from "@/components/admin/enquiries/EnquiriesCRM";
+import AdminSettingsView from "@/components/admin/settings/AdminSettingsView";
 import api from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 
@@ -273,6 +274,11 @@ const AdminCommandCenterPage = () => {
           </motion.div>
         )}
         {activeTab === "projects" && <ProjectsTab />}
+        {activeTab === "settings" && (
+          <motion.div key="settings" variants={tabVariants} initial="hidden" animate="show" exit="exit">
+            <AdminSettingsView />
+          </motion.div>
+        )}
       </AnimatePresence>
     </AdminShell>
   );

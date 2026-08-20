@@ -16,19 +16,19 @@ code {
 }
 
 @layer base {
-    :root {
-        /* Origin-inspired dark design system tokens */
+    :root, [data-theme="obsidian"] {
+        /* Theme A — Dark Obsidian (Default Luxury Dark) */
         --background: 210 6% 6%;
         --foreground: 240 11% 96%;
-        --card: 0 0% 18%;
+        --card: 210 6% 8%;
         --card-foreground: 240 11% 96%;
         --popover: 210 10% 4%;
         --popover-foreground: 240 11% 96%;
         --primary: 0 0% 100%;
         --primary-foreground: 0 0% 0%;
-        --secondary: 210 2% 25%;
+        --secondary: 210 2% 20%;
         --secondary-foreground: 240 11% 96%;
-        --muted: 0 0% 18%;
+        --muted: 210 6% 12%;
         --muted-foreground: 240 1% 63%;
         --accent: 243 100% 75%;
         --accent-foreground: 0 0% 100%;
@@ -37,12 +37,64 @@ code {
         --border: 0 0% 100%;
         --input: 210 2% 25%;
         --ring: 243 100% 75%;
-        --chart-1: 243 100% 75%;
-        --chart-2: 191 100% 43%;
-        --chart-3: 304 53% 72%;
-        --chart-4: 215 76% 75%;
-        --chart-5: 241 40% 48%;
         --radius: 0.5rem;
+
+        /* Semantic Design System Tokens (Obsidian) */
+        --app-bg: #08080c;
+        --surface-base: #0f1015;
+        --surface-card: #14141e;
+        --surface-elevated: #1a1a28;
+        --surface-muted: #222234;
+        --border-subtle: rgba(255, 255, 255, 0.08);
+        --border-strong: rgba(255, 255, 255, 0.16);
+        --text-primary: #f2f2f7;
+        --text-secondary: #9696ab;
+        --text-muted: #64647a;
+        --accent-iris: #6366f1;
+        --accent-glow: rgba(99, 102, 241, 0.15);
+        --status-healthy: #10b981;
+        --status-degraded: #f59e0b;
+        --status-error: #ef4444;
+    }
+
+    [data-theme="editorial"] {
+        /* Theme B — Editorial Light (Refined High-Contrast Light) */
+        --background: 240 10% 98%;
+        --foreground: 240 10% 5%;
+        --card: 0 0% 100%;
+        --card-foreground: 240 10% 5%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 240 10% 5%;
+        --primary: 240 10% 5%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 240 5% 92%;
+        --secondary-foreground: 240 10% 5%;
+        --muted: 240 5% 94%;
+        --muted-foreground: 240 4% 45%;
+        --accent: 243 75% 58%;
+        --accent-foreground: 0 0% 100%;
+        --destructive: 0 72% 51%;
+        --destructive-foreground: 0 0% 100%;
+        --border: 240 6% 88%;
+        --input: 240 6% 88%;
+        --ring: 243 75% 58%;
+
+        /* Semantic Design System Tokens (Editorial) */
+        --app-bg: #fbfbfd;
+        --surface-base: #ffffff;
+        --surface-card: #ffffff;
+        --surface-elevated: #f4f4f8;
+        --surface-muted: #ebebf2;
+        --border-subtle: rgba(0, 0, 0, 0.08);
+        --border-strong: rgba(0, 0, 0, 0.16);
+        --text-primary: #0a0a10;
+        --text-secondary: #4a4a5e;
+        --text-muted: #828296;
+        --accent-iris: #4f46e5;
+        --accent-glow: rgba(79, 70, 229, 0.12);
+        --status-healthy: #059669;
+        --status-degraded: #d97706;
+        --status-error: #dc2626;
     }
 }
 

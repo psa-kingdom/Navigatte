@@ -101,6 +101,24 @@ The platform is deployed as a decoupled monorepo:
   - `mapper.py`: Normalizes Resend delivery events (`email.sent`, `email.delivered`, `email.bounced`, `email.complained`, `email.opened`, `email.clicked`).
   - `client.py`: High-performance asynchronous REST client.
 
+### H. Admin System Health & Integrations Centre (Operational Control Plane)
+- **Backend System Health Router (`GET /api/admin/system/health`, `POST /api/admin/system/health/cal/test`, `POST /api/admin/system/health/database/test`)**:
+  - Live diagnostic evaluation across MongoDB Atlas, Cal.com API/Webhooks, Resend, Railway container, and Vercel.
+  - Multi-state semantic health (`HEALTHY`, `DEGRADED`, `ERROR`, `NOT_CONFIGURED`, `MONITORING_UNAVAILABLE`).
+  - Progressive disclosure of latency, recent failure timestamps, affected capabilities, and actionable remedies.
+- **Frontend Operational Settings View (`AdminSettingsView.jsx`)**:
+  - **System Health**: Telemetry cards, latency gauges, live test actions, incident callouts, and real-time audit feed.
+  - **Integrations**: Configuration status cards for Cal.com, Resend (`updates.navigatte.com`), MongoDB Atlas, and Railway.
+  - **Appearance**: Interactive dual-theme switcher (**Obsidian** vs **Editorial**).
+  - **General & Security**: Admin credential context and session security status.
+
+### I. Dual-Theme Semantic Design Token System
+- **Intentionally Designed Visual Aesthetics**:
+  - **Obsidian Theme**: Space-black (`#08080C`), graphite surfaces (`#14141E`), elevated luminance, iris glow.
+  - **Editorial Theme**: High-contrast porcelain (`#FBFBFD`), pure-white card surfaces (`#FFFFFF`), charcoal typography (`#0A0A10`), royal indigo accents.
+- **Semantic CSS Token System**: `--app-bg`, `--surface-card`, `--surface-elevated`, `--surface-muted`, `--border-subtle`, `--text-primary`, `--text-secondary`, `--status-healthy`, `--status-degraded`, `--status-error`.
+- **`ThemeContext.jsx`**: Reactive context applying `data-theme` attribute and persisting selection in `localStorage`.
+
 ---
 
 ## 5. Master Roadmap & Priority Hierarchy
@@ -128,19 +146,19 @@ PHASE 2C: Scheduling Integration & Provider Abstraction (COMPLETE)
 ├── Public "Book A Call" Lead Qualification Modal Flow (BookCallModal)
 └── Admin Profile Dropdown Component (AdminProfileDropdown)
 
-PHASE 2B: Admin UX & Design System Evolution (IN PROGRESS)
-├── [P1 / Task A] Global Admin Action/Search Bar (COMPLETE — GlobalAdminSearch & GET /api/admin/search)
-├── [P2 / Task B] Dual-Theme Design Token System (NEXT FOUNDATION)
-│   └── High-contrast Dark Obsidian & Editorial Light semantic CSS custom properties
-├── [P3 / Task C] Restrained Flow Field Background System (PLANNED)
-│   └── Dependencies: Task B Theme Tokens, foreground contrast audit, prefers-reduced-motion
+PHASE 2B: Admin UX & Control Centre Evolution (IN PROGRESS)
+├── [P1 / Task A] Global Admin Action/Search Bar (COMPLETE — commit 4e1387b)
+├── [P1 / Control Centre] Admin System Health & Integrations Centre (COMPLETE — AdminSettingsView)
+├── [P2 / Task B] Dual-Theme Semantic Design Token System (COMPLETE — Obsidian & Editorial)
+├── [P3 / Task C] Restrained Flow Field Background System (NEXT CANDIDATE)
+│   └── Dependencies: Theme Tokens, prefers-reduced-motion support, canvas rendering
 ├── [P3 / Task D] Bento-Grid Command Center (PLANNED)
-│   └── Dependencies: Task B Theme Tokens, Phase 2A metrics, modular card components
+│   └── Dependencies: Theme Tokens, Phase 2A metrics, modular card components
 └── [P3 / Task E] Spotlight Module Cards (PLANNED)
     └── Dependencies: Task D Bento layout, design token alignment
 
 PHASE 3: Communications Studio & Email Engine (FOUNDATION ESTABLISHED)
-├── [P1] Communications Provider Contract & Resend Adapter (COMPLETE — zero new deps)
+├── [P1] Communications Provider Contract & Resend Adapter (COMPLETE — commit a5366ea)
 ├── [P3] Email Template Engine & Transactional Outbox (PLANNED)
 ├── [P3] Webhook Ingestion Router & Delivery Tracking (PLANNED)
 └── [P4] Audience & Subscriber Campaign Management (PLANNED)
@@ -150,7 +168,7 @@ PHASE 3: Communications Studio & Email Engine (FOUNDATION ESTABLISHED)
 
 ## 6. Verification Summary
 
-- **Backend Pytest Suite**: **46 passed / 0 failed / 19 skipped** (100% pass rate across auth, security, projects, enquiries, CORS, Cal.com webhooks, qualification flows, startup isolation, global search, and Resend provider boundary).
-- **Frontend Build**: **Compiled successfully** (`npx craco build` — 0 errors, 0 warnings, 381.61 kB gzipped JS).
+- **Backend Pytest Suite**: **50 passed / 0 failed / 19 skipped** (100% pass rate across auth, security, projects, enquiries, CORS, Cal.com webhooks, qualification flows, startup isolation, global search, Resend adapter, and system health endpoints).
+- **Frontend Build**: **Compiled successfully** (`npx craco build` — 0 errors, 0 warnings, 388.84 kB gzipped JS).
 - **Deployment Smoke Test**: **PASS** (CORS preflights, authenticated session flows, search endpoints, and webhook ingestion).
 - **Git State**: Clean working tree on `main` branch, synced with `origin/main` and `origin/test`.
