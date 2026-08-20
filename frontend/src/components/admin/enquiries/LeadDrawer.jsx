@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Mail, Phone, Copy, Check, Building2, MessageSquare,
@@ -6,6 +7,12 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
 import api from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 
@@ -43,7 +50,7 @@ function CopyButton({ value, label }) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
-      // Clipboard not available in some environments
+      // Clipboard fallback
     }
   };
 
@@ -52,13 +59,13 @@ function CopyButton({ value, label }) {
       onClick={handleCopy}
       className="flex items-center gap-1.5 text-sm text-ash hover:text-cloud transition-colors 
                  bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg px-3 py-1.5 
-                 font-mono tabular-nums truncate max-w-full"
+                 font-mono tabular-nums truncate max-w-full group"
       title={`Copy ${label}`}
     >
       <span className="truncate">{value}</span>
       {copied
         ? <Check className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
-        : <Copy className="w-3.5 h-3.5 flex-shrink-0" />}
+        : <Copy className="w-3.5 h-3.5 flex-shrink-0 opacity-60 group-hover:opacity-100" />}
     </button>
   );
 }
@@ -70,7 +77,10 @@ function StatusDropdown({ lead, onStatusChanged }) {
   const current = STATUS_CONFIG[lead.status] ?? STATUS_CONFIG.new;
 
   const handleSelect = async (status) => {
-    if (status === lead.status) { setOpen(false); return; }
+    if (status === lead.status) {
+      setOpen(false);
+      return;
+    }
     setUpdating(true);
     setOpen(false);
     try {
@@ -85,47 +95,47 @@ function StatusDropdown({ lead, onStatusChanged }) {
   };
 
   return (
-    <div className="relative">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        disabled={updating}
-        className={`flex items-center gap-2 border rounded-lg px-3 py-1.5 text-xs font-medium 
-                    transition-colors ${current.color} hover:opacity-80`}
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <button
+          disabled={updating}
+          className={`flex items-center gap-2 border rounded-lg px-3 py-1.5 text-xs font-medium 
+                      transition-colors ${current.color} hover:opacity-90 outline-none focus:ring-1 focus:ring-iris/40`}
+          data-testid="lead-status-dropdown-trigger"
+        >
+          {updating ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+          {current.label}
+          <ChevronDown className="w-3 h-3 opacity-60" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        sideOffset={6}
+        className="bg-graphite border border-white/10 rounded-lg p-1.5 shadow-2xl min-w-[150px] z-[60]"
       >
-        {updating ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-        {current.label}
-        <ChevronDown className="w-3 h-3" />
-      </button>
-
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={{ duration: 0.15 }}
-            className="absolute right-0 top-full mt-1.5 z-50 bg-graphite border border-white/10 
-                       rounded-lg overflow-hidden shadow-xl min-w-[140px]"
-          >
-            {PIPELINE_ORDER.map((s) => {
-              const cfg = STATUS_CONFIG[s];
-              return (
-                <button
-                  key={s}
-                  onClick={() => handleSelect(s)}
-                  className={`w-full text-left px-3 py-2 text-xs font-medium transition-colors
-                              hover:bg-white/5 ${s === lead.status ? "bg-white/5" : ""}`}
-                >
-                  <span className={`inline-flex items-center gap-1.5 border rounded px-2 py-0.5 ${cfg.color}`}>
-                    {cfg.label}
-                  </span>
-                </button>
-              );
-            })}
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
+        {PIPELINE_ORDER.map((s) => {
+          const cfg = STATUS_CONFIG[s];
+          const isCurrent = s === lead.status;
+          return (
+            <DropdownMenuItem
+              key={s}
+              onClick={() => handleSelect(s)}
+              className={`flex items-center justify-between px-2.5 py-1.5 text-xs font-medium rounded-md cursor-pointer
+                          hover:bg-white/10 focus:bg-white/10 outline-none transition-colors ${
+                            isCurrent ? "bg-white/5" : ""
+                          }`}
+            >
+              <span
+                className={`inline-flex items-center gap-1.5 border rounded px-2 py-0.5 ${cfg.color}`}
+              >
+                {cfg.label}
+              </span>
+              {isCurrent && <Check className="w-3.5 h-3.5 text-iris ml-2" />}
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -173,7 +183,7 @@ function NoteComposer({ lead, onNoteAdded }) {
   );
 }
 
-// Main LeadDrawer component
+// Main LeadDrawer component with Portal mounting
 const LeadDrawer = ({ lead: initialLead, onClose, onLeadUpdated }) => {
   const [lead, setLead] = useState(initialLead);
 
@@ -189,28 +199,33 @@ const LeadDrawer = ({ lead: initialLead, onClose, onLeadUpdated }) => {
 
   if (!lead) return null;
 
-  const cfg = STATUS_CONFIG[lead.status] ?? STATUS_CONFIG.new;
-
-  return (
-    <>
-      {/* Backdrop */}
+  const drawerContent = (
+    <div className="fixed inset-0 z-50 pointer-events-none">
+      {/* Full-viewport Backdrop */}
       <motion.div
+        key="lead-drawer-backdrop"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.2 }}
-        className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40"
+        className="fixed inset-0 bg-black/60 backdrop-blur-sm pointer-events-auto"
         onClick={onClose}
+        aria-hidden="true"
+        data-testid="lead-drawer-backdrop"
       />
 
-      {/* Drawer panel */}
+      {/* Full-height Drawer Panel */}
       <motion.div
+        key="lead-drawer-panel"
         initial={{ x: "100%" }}
         animate={{ x: 0 }}
         exit={{ x: "100%" }}
         transition={{ type: "spring", damping: 26, stiffness: 280 }}
         className="fixed right-0 top-0 bottom-0 w-full max-w-md bg-obsidian border-l border-white/10 
-                   z-50 flex flex-col overflow-hidden shadow-2xl"
+                   flex flex-col overflow-hidden shadow-2xl pointer-events-auto"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Lead details for ${lead.name}`}
         data-testid="lead-drawer"
       >
         {/* Header */}
@@ -230,6 +245,7 @@ const LeadDrawer = ({ lead: initialLead, onClose, onLeadUpdated }) => {
             onClick={onClose}
             className="flex-shrink-0 w-8 h-8 flex items-center justify-center rounded-lg 
                        text-fog hover:text-cloud hover:bg-white/5 transition-colors"
+            aria-label="Close lead details"
             data-testid="lead-drawer-close"
           >
             <X className="w-4 h-4" />
@@ -309,8 +325,11 @@ const LeadDrawer = ({ lead: initialLead, onClose, onLeadUpdated }) => {
           </div>
         </div>
       </motion.div>
-    </>
+    </div>
   );
+
+  if (typeof document === "undefined") return null;
+  return createPortal(drawerContent, document.body);
 };
 
 export default LeadDrawer;

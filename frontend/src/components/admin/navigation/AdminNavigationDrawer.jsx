@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Menu,
@@ -81,7 +82,7 @@ export const AdminNavigationDrawer = ({
     }
   };
 
-  return (
+  const drawerContent = (
     <AnimatePresence>
       {isOpen && (
         <>
@@ -93,7 +94,7 @@ export const AdminNavigationDrawer = ({
             animate="open"
             exit="closed"
             onClick={() => onOpenChange(false)}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40"
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50"
             aria-hidden="true"
             data-testid="admin-nav-backdrop"
           />
@@ -234,6 +235,9 @@ export const AdminNavigationDrawer = ({
       )}
     </AnimatePresence>
   );
+
+  if (typeof document === "undefined") return null;
+  return createPortal(drawerContent, document.body);
 };
 
 export default AdminNavigationDrawer;
