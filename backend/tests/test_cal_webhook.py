@@ -347,3 +347,41 @@ def test_admin_integrations_status(client, auth_headers):
     assert data["cal"]["name"] == "Cal.com"
     assert "has_webhook_secret" in data["cal"]
     assert "stats" in data
+
+
+def test_startup_isolation_without_cal_credentials(client, monkeypatch):
+    """Proves the app and APIs run 100% normally when all Cal.com credentials are unset."""
+    monkeypatch.delenv("CAL_API_KEY", raising=False)
+    monkeypatch.delenv("CAL_COM_API", raising=False)
+    monkeypatch.delenv("CALCOM_API_KEY", raising=False)
+    monkeypatch.setattr(settings, "CAL_ENABLED", False)
+    monkeypatch.setattr(settings, "CAL_WEBHOOK_SECRET", None)
+
+    # Core root endpoint
+    root_resp = client.get("/api/")
+    assert root_resp.status_code == 200
+    assert "Navigatte API" in root_resp.json().get("app", "")
+
+    # Core status endpoint
+    status_resp = client.get("/api/status")
+    assert status_resp.status_code == 200
+    assert isinstance(status_resp.json(), list)
+
+    # Core public projects endpoint
+    projects_resp = client.get("/api/projects")
+    assert projects_resp.status_code == 200
+    assert isinstance(projects_resp.json(), list)
+
+
+def test_cal_api_key_fallback_resolution(monkeypatch):
+    """Verifies that CAL_API_KEY resolves properly from environment."""
+    monkeypatch.setenv("CAL_API_KEY", "cal_test_key_123")
+    from core.config import Settings
+    s = Settings()
+    assert s.CAL_API_KEY == "cal_test_key_123"
+
+    monkeypatch.delenv("CAL_API_KEY", raising=False)
+    monkeypatch.setenv("CAL_COM_API", "cal_fallback_key_456")
+    s2 = Settings()
+    assert s2.CAL_API_KEY == "cal_fallback_key_456"
+

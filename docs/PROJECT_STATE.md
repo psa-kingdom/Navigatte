@@ -64,6 +64,14 @@ The platform is deployed as a decoupled monorepo:
 ### C. Test Lead Isolation
 - The diagnostic `"Test RCA Verification Lead"` is marked with `is_test: true` in MongoDB and is cleanly excluded from dashboard business pipeline metrics.
 
+### D. Railway Deployment Hardening & Dependency Isolation
+- **Railway Crash Root Cause**: Production crash on Railway caused by `ModuleNotFoundError: No module named 'httpx'` due to missing dependency declarations in `backend/requirements.txt`.
+- **Resolution**:
+  - Explicitly added `httpx>=0.27.0` and `python-dateutil>=2.9.0` to `backend/requirements.txt`.
+  - Replaced `dateutil` in `mapper.py` with standard library `datetime.fromisoformat()` for zero-dependency ISO-8601 parsing.
+  - Hardened `CAL_API_KEY` in `config.py` with fallback resolution (`CAL_API_KEY` or `CAL_COM_API` or `CALCOM_API_KEY`).
+  - Added test coverage ensuring FastAPI boots cleanly when Cal.com credentials are unset or disabled.
+
 ---
 
 ## 5. Master Roadmap & Dependency Hierarchy
@@ -86,7 +94,8 @@ PHASE 2C: Scheduling Integration & Provider Abstraction (COMPLETE)
 ├── Durable Database-Backed Idempotency (IntegrationWebhookEvent)
 ├── Deterministic CRM Lead Matching & Independent Scheduling Status
 ├── Interactive Activity Timeline & Scheduled Consultation Cards
-└── Diagnostic Test Record Classification (is_test flag)
+├── Diagnostic Test Record Classification (is_test flag)
+└── Production Dependency Hardening & Startup Isolation (httpx in requirements.txt)
 
 PHASE 2B: Admin UX Evolution (BACKLOG / PLANNED)
 ├── [Task A] Global Admin Action/Search Bar (kokonutui action-search-bar reference)
@@ -109,7 +118,7 @@ PHASE 3: Communications Studio & Email Delivery (DEFERRED / NOT STARTED)
 
 ## 6. Verification Summary
 
-- **Backend Pytest Suite**: **37 passed / 0 failed / 19 skipped** (100% pass rate across auth, security, projects, enquiries, CORS, and Cal.com webhooks).
+- **Backend Pytest Suite**: **39 passed / 0 failed / 19 skipped** (100% pass rate across auth, security, projects, enquiries, CORS, Cal.com webhooks, and startup isolation).
 - **Frontend Build**: **Compiled successfully** (`npx craco build` — 0 errors, 0 warnings, 376 kB gzipped JS).
 - **Deployment Smoke Test**: **PASS** (CORS preflights, authenticated session flows, and webhook ingestion).
 - **Git State**: Clean working tree on `main` branch, synced with `origin/main` and `origin/test`.

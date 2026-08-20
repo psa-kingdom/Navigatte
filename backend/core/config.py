@@ -39,10 +39,17 @@ class Settings:
 
     # Cal.com Scheduling Integration
     CAL_ENABLED: bool = os.getenv("CAL_ENABLED", "false").lower() in ("true", "1", "yes")
-    CAL_API_KEY: Optional[str] = os.getenv("CAL_API_KEY")
     CAL_WEBHOOK_SECRET: Optional[str] = os.getenv("CAL_WEBHOOK_SECRET")
     CAL_EVENT_TYPE_ID: Optional[str] = os.getenv("CAL_EVENT_TYPE_ID")
     CAL_WEBHOOK_SUBSCRIBER_URL: Optional[str] = os.getenv("CAL_WEBHOOK_SUBSCRIBER_URL")
+
+    @property
+    def CAL_API_KEY(self) -> Optional[str]:
+        return (
+            os.getenv("CAL_API_KEY")
+            or os.getenv("CAL_COM_API")
+            or os.getenv("CALCOM_API_KEY")
+        )
 
     @property
     def JWT_SECRET(self) -> str:

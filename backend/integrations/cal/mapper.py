@@ -6,7 +6,6 @@ Transforms Cal.com specific JSON payloads into normalized SchedulingEvent domain
 from datetime import datetime, timezone
 import logging
 from typing import Any, Dict, Optional
-from dateutil import parser as date_parser
 
 from integrations.contracts.scheduling import (
     SchedulingAttendee,
@@ -38,7 +37,8 @@ def _parse_dt(val: Any) -> Optional[datetime]:
         return val if val.tzinfo else val.replace(tzinfo=timezone.utc)
     if isinstance(val, str):
         try:
-            parsed = date_parser.isoparse(val)
+            cleaned = val.replace("Z", "+00:00") if val.endswith("Z") else val
+            parsed = datetime.fromisoformat(cleaned)
             return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
         except Exception:
             return None
