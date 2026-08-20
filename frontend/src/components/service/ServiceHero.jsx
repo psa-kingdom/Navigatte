@@ -1,8 +1,8 @@
-import React from "react";
+import React, { useState } from "react";
 import { motion } from "framer-motion";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { CTA_LINK } from "@/data/siteData";
+import BookCallModal from "@/components/shared/BookCallModal";
 
 const HERO_IMAGES = {
   "digital-platforms": "https://images.unsplash.com/photo-1531403009284-440f080d1e12?auto=format&fit=crop&w=1000&q=80",
@@ -22,6 +22,7 @@ const ACCENT_GLOWS = {
 };
 
 const ServiceHero = ({ service }) => {
+  const [isBookModalOpen, setIsBookModalOpen] = useState(false);
   const heroImg = HERO_IMAGES[service.slug] || HERO_IMAGES["digital-platforms"];
   const accentGlow = ACCENT_GLOWS[service.accent] || ACCENT_GLOWS.iris;
 
@@ -90,14 +91,12 @@ const ServiceHero = ({ service }) => {
             className="mt-8 flex flex-col sm:flex-row items-center gap-4 w-full sm:w-auto"
           >
             <Button
-              asChild
+              onClick={() => setIsBookModalOpen(true)}
               data-testid="service-hero-cta-button"
               className="bg-pure text-void hover:bg-cloud rounded-lg px-6 h-12 text-sm font-medium transition-transform duration-200 active:scale-95 flex items-center justify-center gap-1.5 w-full sm:w-auto"
             >
-              <a href={CTA_LINK} target="_blank" rel="noopener noreferrer">
-                Book a Call
-                <ArrowRight className="w-4 h-4" />
-              </a>
+              Book a Call
+              <ArrowRight className="w-4 h-4" />
             </Button>
           </motion.div>
         </motion.div>
@@ -123,6 +122,12 @@ const ServiceHero = ({ service }) => {
           </motion.div>
         </div>
       </div>
+
+      <BookCallModal
+        isOpen={isBookModalOpen}
+        onClose={() => setIsBookModalOpen(false)}
+        defaultService={service.tileTitle}
+      />
     </section>
   );
 };

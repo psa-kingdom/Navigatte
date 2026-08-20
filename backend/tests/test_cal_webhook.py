@@ -385,3 +385,65 @@ def test_cal_api_key_fallback_resolution(monkeypatch):
     s2 = Settings()
     assert s2.CAL_API_KEY == "cal_fallback_key_456"
 
+
+def test_qualification_submission_and_webhook_correlation_flow(client):
+    """Simulates visitor filling Book A Call modal -> POST /api/enquiries -> then Cal.com webhook arriving."""
+    db = get_database()
+    email = "steve.enterprise@apple.com"
+    booking_uid = "bkg_steve_full_e2e"
+
+    async def _cleanup():
+        await db.enquiries.delete_many({"email": email})
+        await db.integration_webhook_events.delete_many({"external_booking_uid": booking_uid})
+
+    asyncio.run(_cleanup())
+
+    # Step 1: Visitor completes BookCallModal qualification form
+    enquiry_payload = {
+        "name": "Steve Enterprise",
+        "email": email,
+        "company": "Apple Inc",
+        "service_interest": "AI & Automation Platforms",
+        "message": "We need custom AI infrastructure for our platform.",
+    }
+    enq_resp = client.post("/api/enquiries", json=enquiry_payload)
+    assert enq_resp.status_code == 200
+
+    # Step 2: Cal.com webhook arrives after meeting is selected
+    cal_payload = {
+        "triggerEvent": "BOOKING_CREATED",
+        "createdAt": "2026-08-20T14:30:00.000Z",
+        "payload": {
+            "uid": booking_uid,
+            "title": "Strategy Discovery Session",
+            "startTime": "2026-09-02T15:00:00Z",
+            "endTime": "2026-09-02T15:30:00Z",
+            "timezone": "America/New_York",
+            "videoCallUrl": "https://meet.google.com/xyz-abcd-efg",
+            "attendees": [{"name": "Steve Enterprise", "email": email}],
+        },
+    }
+    body = json.dumps(cal_payload).encode("utf-8")
+    sig = generate_signature(body)
+    hook_resp = client.post(
+        "/api/webhooks/cal",
+        content=body,
+        headers={"x-cal-signature-256": sig, "content-type": "application/json"},
+    )
+    assert hook_resp.status_code == 200
+
+    # Step 3: Verify the original enquiry has been updated in CRM with booking details and timeline activity
+    async def _verify():
+        doc = await db.enquiries.find_one({"email": email})
+        assert doc is not None
+        assert doc["status"] == "contacted"
+        assert doc["scheduling_status"] == "booked"
+        assert doc["booking"]["booking_uid"] == booking_uid
+        assert doc["booking"]["event_title"] == "Strategy Discovery Session"
+        assert doc["booking"]["meeting_url"] == "https://meet.google.com/xyz-abcd-efg"
+        assert len(doc["activities"]) >= 1
+        assert doc["activities"][0]["type"] == "booking_created"
+
+    asyncio.run(_verify())
+
+

@@ -1,11 +1,14 @@
-import React from "react";
+import React, { useState } from "react";
 import { motion } from "framer-motion";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import HeroBackgroundVideo from "@/components/home/HeroBackgroundVideo";
+import BookCallModal from "@/components/shared/BookCallModal";
 import { CTA_LINK, TRUST_STRIP_TEXT } from "@/data/siteData";
 
 const Hero = () => {
+  const [isBookModalOpen, setIsBookModalOpen] = useState(false);
+
   const scrollToServices = (e) => {
     e.preventDefault();
     document.getElementById("services")?.scrollIntoView({ behavior: "smooth" });
@@ -77,14 +80,12 @@ const Hero = () => {
           className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-4 max-w-md mx-auto sm:max-w-none"
         >
           <Button
-            asChild
+            onClick={() => setIsBookModalOpen(true)}
             data-testid="hero-primary-cta"
             className="bg-pure text-void hover:bg-cloud rounded-lg px-6 h-12 text-sm font-medium w-full sm:w-auto transition-transform duration-200 active:scale-95 flex items-center justify-center gap-1.5 shadow-lg"
           >
-            <a href={CTA_LINK} target="_blank" rel="noopener noreferrer">
-              Book a Free Call
-              <ArrowRight className="w-4 h-4" />
-            </a>
+            Book a Free Call
+            <ArrowRight className="w-4 h-4" />
           </Button>
           <button
             onClick={scrollToServices}
@@ -95,6 +96,11 @@ const Hero = () => {
           </button>
         </motion.div>
       </motion.div>
+
+      <BookCallModal
+        isOpen={isBookModalOpen}
+        onClose={() => setIsBookModalOpen(false)}
+      />
     </section>
   );
 };

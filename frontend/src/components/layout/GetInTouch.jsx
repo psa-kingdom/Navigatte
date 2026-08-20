@@ -1,10 +1,13 @@
-import React from "react";
+import React, { useState } from "react";
 import { motion } from "framer-motion";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { CTA_LINK, CONTACT_EMAIL } from "@/data/siteData";
+import { CONTACT_EMAIL } from "@/data/siteData";
+import BookCallModal from "@/components/shared/BookCallModal";
 
 const GetInTouch = () => {
+  const [isBookModalOpen, setIsBookModalOpen] = useState(false);
+
   return (
     <section id="contact" className="bg-abyss border-t border-white/10">
       <div className="max-w-content mx-auto px-6 py-24 md:py-32 text-center">
@@ -38,14 +41,12 @@ const GetInTouch = () => {
           className="mt-10"
         >
           <Button
-            asChild
+            onClick={() => setIsBookModalOpen(true)}
             data-testid="get-in-touch-cta-button"
             className="bg-pure text-void hover:bg-cloud rounded-lg px-6 h-12 text-sm font-medium"
           >
-            <a href={CTA_LINK} target="_blank" rel="noopener noreferrer">
-              Book a Free Call
-              <ArrowRight className="w-4 h-4" />
-            </a>
+            Book a Free Call
+            <ArrowRight className="w-4 h-4 ml-1.5" />
           </Button>
           <p className="mt-5 text-sm text-fog">
             Or email us at{" "}
@@ -60,6 +61,11 @@ const GetInTouch = () => {
           </p>
         </motion.div>
       </div>
+
+      <BookCallModal
+        isOpen={isBookModalOpen}
+        onClose={() => setIsBookModalOpen(false)}
+      />
     </section>
   );
 };

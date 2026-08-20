@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import Logo from "@/components/layout/Logo";
 import { useAdminAuth } from "@/context/AdminAuthContext";
 import AdminNavigationDrawer from "@/components/admin/navigation/AdminNavigationDrawer";
+import AdminProfileDropdown from "@/components/admin/layout/AdminProfileDropdown";
 import { ADMIN_NAV_ITEMS } from "@/config/adminNavigationConfig";
 
 export const AdminShell = ({
@@ -12,7 +13,7 @@ export const AdminShell = ({
   children,
   headerExtra = null,
 }) => {
-  const { admin, logout } = useAdminAuth();
+  const { admin } = useAdminAuth();
   const [isNavOpen, setIsNavOpen] = useState(false);
   const hoverTimeoutRef = useRef(null);
 
@@ -93,27 +94,10 @@ export const AdminShell = ({
             )}
           </div>
 
-          {/* Right: Extra tools / Admin Session Info & Logout */}
+          {/* Right: Extra tools / Admin Profile Dropdown */}
           <div className="flex items-center gap-3">
             {headerExtra}
-
-            <span
-              data-testid="admin-user-email"
-              className="text-xs text-ash hidden lg:inline font-mono px-2.5 py-1 rounded bg-white/3 border border-white/5"
-            >
-              {admin?.email}
-            </span>
-
-            <Button
-              onClick={logout}
-              data-testid="admin-logout-button"
-              variant="outline"
-              size="sm"
-              className="border-white/15 text-ash hover:text-cloud hover:bg-white/5 rounded-lg h-8 text-xs px-3"
-            >
-              <LogOut className="w-3.5 h-3.5 mr-1.5" />
-              Log Out
-            </Button>
+            <AdminProfileDropdown />
           </div>
         </div>
       </header>

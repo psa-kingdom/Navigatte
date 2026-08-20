@@ -97,9 +97,12 @@ def map_cal_webhook_to_event(
         )
 
     # Extract Meeting Details
-    meeting_url = inner.get("meetingUrl")
-    if not meeting_url and isinstance(inner.get("videoCallData"), dict):
-        meeting_url = inner.get("videoCallData", {}).get("url")
+    meeting_url = (
+        inner.get("meetingUrl")
+        or inner.get("videoCallUrl")
+        or (inner.get("videoCallData", {}).get("url") if isinstance(inner.get("videoCallData"), dict) else None)
+        or (inner.get("location") if isinstance(inner.get("location"), str) and inner.get("location").startswith("http") else None)
+    )
 
     meeting = SchedulingMeeting(
         title=inner.get("title") or "Consultation Call",

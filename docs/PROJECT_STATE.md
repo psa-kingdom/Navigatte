@@ -72,6 +72,14 @@ The platform is deployed as a decoupled monorepo:
   - Hardened `CAL_API_KEY` in `config.py` with fallback resolution (`CAL_API_KEY` or `CAL_COM_API` or `CALCOM_API_KEY`).
   - Added test coverage ensuring FastAPI boots cleanly when Cal.com credentials are unset or disabled.
 
+### E. Public "Book A Call" Qualification Flow & Admin Profile UI
+- **Public "Book A Call" Flow (`BookCallModal.jsx`)**:
+  - Replaced raw external Cal.com links with a high-contrast qualification modal mounted via `createPortal`.
+  - **Step 1**: Ingests prospect name, work email, company, service focus, and project goal into Navigatte CRM (`POST /api/enquiries`), creating a persistent lead (`status: "new"`).
+  - **Step 2**: Transitions smoothly to Cal.com scheduling with prefilled parameters (`?name=...&email=...&notes=...`), preserving lead ownership even if the visitor abandons the calendar step.
+- **Admin Profile UI (`AdminProfileDropdown.jsx`)**:
+  - Replaced static text with an accessible Radix `DropdownMenu` profile badge with avatar initials, role display (`Administrator`), session state, and accessible logout trigger.
+
 ---
 
 ## 5. Master Roadmap & Dependency Hierarchy
@@ -95,7 +103,9 @@ PHASE 2C: Scheduling Integration & Provider Abstraction (COMPLETE)
 ├── Deterministic CRM Lead Matching & Independent Scheduling Status
 ├── Interactive Activity Timeline & Scheduled Consultation Cards
 ├── Diagnostic Test Record Classification (is_test flag)
-└── Production Dependency Hardening & Startup Isolation (httpx in requirements.txt)
+├── Production Dependency Hardening & Startup Isolation (httpx in requirements.txt)
+├── Public "Book A Call" Lead Qualification Modal Flow (BookCallModal)
+└── Admin Profile Dropdown Component (AdminProfileDropdown)
 
 PHASE 2B: Admin UX Evolution (BACKLOG / PLANNED)
 ├── [Task A] Global Admin Action/Search Bar (kokonutui action-search-bar reference)
@@ -118,7 +128,7 @@ PHASE 3: Communications Studio & Email Delivery (DEFERRED / NOT STARTED)
 
 ## 6. Verification Summary
 
-- **Backend Pytest Suite**: **39 passed / 0 failed / 19 skipped** (100% pass rate across auth, security, projects, enquiries, CORS, Cal.com webhooks, and startup isolation).
-- **Frontend Build**: **Compiled successfully** (`npx craco build` — 0 errors, 0 warnings, 376 kB gzipped JS).
+- **Backend Pytest Suite**: **40 passed / 0 failed / 19 skipped** (100% pass rate across auth, security, projects, enquiries, CORS, Cal.com webhooks, qualification flows, and startup isolation).
+- **Frontend Build**: **Compiled successfully** (`npx craco build` — 0 errors, 0 warnings, 379 kB gzipped JS).
 - **Deployment Smoke Test**: **PASS** (CORS preflights, authenticated session flows, and webhook ingestion).
 - **Git State**: Clean working tree on `main` branch, synced with `origin/main` and `origin/test`.
