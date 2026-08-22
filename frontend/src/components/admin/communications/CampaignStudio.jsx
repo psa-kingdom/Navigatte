@@ -896,21 +896,30 @@ export const CampaignStudio = ({
           </Button>
 
           {lastTestResult && (
-            <div className={`p-2 px-3 rounded-lg border text-xs flex items-center gap-2 font-mono ${
+            <div className={`p-2.5 px-3.5 rounded-xl border text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 font-mono ${
               lastTestResult.success
                 ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
                 : "bg-rose-500/10 border-rose-500/30 text-rose-300"
             }`}>
-              {lastTestResult.success ? (
-                <>
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                  <span>Accepted by Resend (Message ID: {lastTestResult.provider_message_id || lastTestResult.results?.[0]?.message_id || "sent"})</span>
-                </>
-              ) : (
-                <>
-                  <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-                  <span>{lastTestResult.error_message || "Test dispatch failed"}</span>
-                </>
+              <div className="flex items-center gap-2">
+                {lastTestResult.success ? (
+                  <>
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>
+                      Accepted by Resend &bull; ID: <strong>{lastTestResult.provider_message_id || lastTestResult.results?.[0]?.message_id || "sent"}</strong>
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                    <span>{lastTestResult.error_message || "Test dispatch failed"}</span>
+                  </>
+                )}
+              </div>
+              {lastTestResult.success && (
+                <span className="text-[10px] text-fog/80">
+                  (Check <strong>Spam / Promotions</strong> folder if not in Primary inbox within 1–2 mins)
+                </span>
               )}
             </div>
           )}

@@ -359,6 +359,30 @@ async def retry_outbox_message(
         )
 
 
+@router.get("/resend/emails/{message_id}")
+async def get_resend_email_status(
+    message_id: str,
+    admin: AdminUser = Depends(get_current_admin),
+) -> Dict[str, Any]:
+    """Queries Resend API directly for the live delivery event status of a specific message ID."""
+    from integrations.resend.client import ResendApiClient
+    client = ResendApiClient()
+    if not client.is_configured:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Resend API key is not configured.",
+        )
+    try:
+        data = await client.get_email(message_id)
+        return {"success": True, "email": data}
+    except Exception as e:
+        logger.error(f"Failed to query Resend for email {message_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
 # ============================================================================
 # TEST EMAIL DISPATCH (THE CANONICAL SEND-TEST ENDPOINT)
 # ============================================================================

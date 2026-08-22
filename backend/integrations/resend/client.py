@@ -74,6 +74,13 @@ class ResendApiClient:
         }
         if html:
             payload["html"] = html
+            if not text:
+                # Generate clean plain text from html for high-deliverability multipart email
+                clean_text = re.sub(r'<style[^>]*>[\s\S]*?</style>', '', html, flags=re.I)
+                clean_text = re.sub(r'<script[^>]*>[\s\S]*?</script>', '', clean_text, flags=re.I)
+                clean_text = re.sub(r'<[^>]+>', ' ', clean_text)
+                clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+                payload["text"] = clean_text
         if text:
             payload["text"] = text
         if reply_to:
@@ -87,8 +94,18 @@ class ResendApiClient:
                     cleaned_tags.append({"name": clean_k, "value": clean_v})
             if cleaned_tags:
                 payload["tags"] = cleaned_tags
-        if headers:
-            payload["headers"] = headers
+
+        # Auto-extract List-Unsubscribe header from HTML if present
+        all_headers = dict(headers or {})
+        if html and "List-Unsubscribe" not in all_headers:
+            unsub_match = re.search(r'href=[\'"]([^\'"]*api/unsubscribe[^\'"]*)[\'"]', html, flags=re.I)
+            if unsub_match:
+                unsub_url = unsub_match.group(1)
+                all_headers["List-Unsubscribe"] = f"<{unsub_url}>"
+                all_headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+
+        if all_headers:
+            payload["headers"] = all_headers
 
         async with httpx.AsyncClient(timeout=12.0) as client:
             resp = await client.post(
