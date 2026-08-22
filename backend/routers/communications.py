@@ -30,11 +30,13 @@ router = APIRouter(prefix="/admin/communications", tags=["communications"])
 class SendTestEmailRequest(BaseModel):
     """Request body for /send-test.
     
+    Accepts single recipient_email or multiple recipient_emails list.
     Accepts either a template_key (with optional version) or custom_html.
     The backend will use the canonical render_message() pipeline with exactly
     the content provided — no silent template re-fetching.
     """
-    recipient_email: EmailStr
+    recipient_email: Optional[EmailStr] = None
+    recipient_emails: Optional[List[EmailStr]] = None
     recipient_name: Optional[str] = None
 
     # Content source: custom_html takes priority over template_key
@@ -248,17 +250,24 @@ async def send_test_email(
 ) -> Dict[str, Any]:
     """Dispatches a real test email through Resend using the canonical render pipeline.
     
-    IMPORTANT: This endpoint accepts either custom_html or template_key.
+    Accepts single recipient_email or multiple recipient_emails.
+    Accepts either custom_html or template_key.
     The content sent is EXACTLY what was provided — no silent template re-fetching.
-    This is the fix for the P0 content mismatch bug where the test email would
-    send a different template than what the admin composed in the editor.
-    
-    Priority:
-        1. custom_html (if provided) → sends that HTML exactly
-        2. template_key + template_version → loads that specific version
-        3. template_key alone → loads the active/latest version
     """
-    # Determine content source
+    # 1. Resolve recipients
+    target_emails = []
+    if payload.recipient_emails:
+        target_emails = [e.lower().strip() for e in payload.recipient_emails if e and e.strip()]
+    elif payload.recipient_email:
+        target_emails = [payload.recipient_email.lower().strip()]
+
+    if not target_emails:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one test recipient email is required (recipient_email or recipient_emails).",
+        )
+
+    # 2. Determine content source
     has_custom_html = bool(payload.custom_html and payload.custom_html.strip())
     has_template = bool(payload.template_key and payload.template_key not in ("custom", ""))
 
@@ -274,7 +283,7 @@ async def send_test_email(
             detail="Subject line is required for test dispatch.",
         )
 
-    # Use the canonical render pipeline — same function used by preview and campaign launch
+    # 3. Canonical render pipeline (one single render for consistency)
     snapshot = await CommunicationsService.render_message(
         db,
         template_key=payload.template_key if has_template and not has_custom_html else None,
@@ -284,28 +293,23 @@ async def send_test_email(
         variables=payload.variables or {},
     )
 
-    # Dispatch directly through the provider (no campaign association)
     from integrations.resend.provider import ResendCommunicationsProvider
     from integrations.contracts.communications import EmailMessage, EmailRecipient
+    from models.communications import OutboxItemModel, OutboxStatus
+    from datetime import timezone
 
     provider = ResendCommunicationsProvider()
     from_email = snapshot.from_email
     environment = getattr(settings, "COMMUNICATIONS_ENVIRONMENT", "test")
-
-    # Create outbox item to record this test send
-    from models.communications import OutboxItemModel, OutboxStatus
-    import uuid
-    from datetime import timezone
-
     now = datetime.now(timezone.utc)
-    idem_key = f"test:{payload.recipient_email}:{admin.email}:{int(now.timestamp())}"
 
     if not provider.is_enabled():
         return {
             "success": False,
             "status": "provider_disabled",
             "error_message": (
-                "RESEND_API_KEY is not configured. Set the environment variable to enable delivery."
+                "Email delivery is currently unconfigured: RESEND_API_KEY is missing on this environment. "
+                "Set RESEND_API_KEY to enable live email delivery."
             ),
             "preview": {
                 "subject": snapshot.subject,
@@ -314,59 +318,86 @@ async def send_test_email(
                 "template_version": snapshot.template_version,
                 "unresolved_variables": snapshot.unresolved_variables,
             },
+            "sent_count": 0,
+            "failed_count": len(target_emails),
+            "total_recipients": len(target_emails),
+            "results": [{"email": e, "status": "provider_disabled", "error": "RESEND_API_KEY is not configured"} for e in target_emails],
+            "environment": environment,
         }
 
-    msg = EmailMessage(
-        to=[EmailRecipient(email=payload.recipient_email, name=payload.recipient_name or "Test Recipient")],
-        subject=snapshot.subject,
-        html_body=snapshot.body_html,
-        text_body=snapshot.body_text,
-        from_email=from_email,
-        idempotency_key=idem_key,
-        tags={"template_key": snapshot.template_key or "custom", "send_type": "test"},
-    )
+    results = []
+    first_outbox_id = None
+    first_msg_id = None
 
-    result = await provider.send_email(msg)
+    for email_addr in target_emails:
+        idem_key = f"test:{email_addr}:{admin.email}:{int(now.timestamp())}"
+        msg = EmailMessage(
+            to=[EmailRecipient(email=email_addr, name=payload.recipient_name or "Test Recipient")],
+            subject=snapshot.subject,
+            html_body=snapshot.body_html,
+            text_body=snapshot.body_text,
+            from_email=from_email,
+            idempotency_key=idem_key,
+            tags={"template_key": snapshot.template_key or "custom", "send_type": "test"},
+        )
 
-    # Record in outbox for audit trail
-    outbox_item = OutboxItemModel(
-        idempotency_key=idem_key,
-        template_key=snapshot.template_key,
-        recipient_email=payload.recipient_email,
-        recipient_name=payload.recipient_name or "Test Recipient",
-        subject=snapshot.subject,
-        body_html=snapshot.body_html,
-        body_text=snapshot.body_text,
-        from_email=from_email,
-        status=OutboxStatus.SENT if result.status == "sent" else OutboxStatus.FAILED,
-        provider="resend",
-        provider_message_id=result.message_id if result.status == "sent" else None,
-        environment=environment,
-        attempt_count=1,
-        sent_at=now if result.status == "sent" else None,
-        error_message=result.error if result.status != "sent" else None,
-        metadata={
-            "send_type": "manual_test",
-            "sent_by": admin.email,
-            "template_version": snapshot.template_version,
-        },
-        tags={"template_key": snapshot.template_key or "custom", "send_type": "test"},
-    )
-    try:
-        await db.email_outbox.insert_one(outbox_item.to_mongo())
-    except Exception:
-        pass  # Don't fail the test send if outbox insert has a duplicate key
+        res = await provider.send_email(msg)
 
-    is_success = result.status == "sent"
+        outbox_item = OutboxItemModel(
+            idempotency_key=idem_key,
+            template_key=snapshot.template_key,
+            recipient_email=email_addr,
+            recipient_name=payload.recipient_name or "Test Recipient",
+            subject=snapshot.subject,
+            body_html=snapshot.body_html,
+            body_text=snapshot.body_text,
+            from_email=from_email,
+            status=OutboxStatus.SENT if res.status == "sent" else OutboxStatus.FAILED,
+            provider="resend",
+            provider_message_id=res.message_id if res.status == "sent" else None,
+            environment=environment,
+            attempt_count=1,
+            sent_at=now if res.status == "sent" else None,
+            error_message=res.error if res.status != "sent" else None,
+            metadata={
+                "send_type": "manual_test",
+                "sent_by": admin.email,
+                "template_version": snapshot.template_version,
+            },
+            tags={"template_key": snapshot.template_key or "custom", "send_type": "test"},
+        )
+        try:
+            await db.email_outbox.insert_one(outbox_item.to_mongo())
+        except Exception:
+            pass
+
+        if not first_outbox_id:
+            first_outbox_id = outbox_item.id
+            first_msg_id = res.message_id
+
+        results.append({
+            "email": email_addr,
+            "status": res.status,
+            "message_id": res.message_id,
+            "error": res.error if res.status != "sent" else None,
+        })
+
+    sent_count = sum(1 for r in results if r["status"] == "sent")
+    is_success = sent_count > 0
+
     return {
         "success": is_success,
-        "status": result.status,
-        "outbox_id": outbox_item.id,
-        "provider_message_id": result.message_id,
-        "error_message": result.error if not is_success else None,
+        "status": "sent" if is_success else "failed",
+        "sent_count": sent_count,
+        "failed_count": len(target_emails) - sent_count,
+        "total_recipients": len(target_emails),
+        "outbox_id": first_outbox_id,
+        "provider_message_id": first_msg_id,
+        "results": results,
         "environment": environment,
         "preview": {
             "subject": snapshot.subject,
+            "body_html": snapshot.body_html,
             "template_key": snapshot.template_key,
             "template_version": snapshot.template_version,
             "unresolved_variables": snapshot.unresolved_variables,

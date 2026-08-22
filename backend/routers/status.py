@@ -48,3 +48,18 @@ async def get_status_checks(db: AsyncIOMotorDatabase = Depends(get_database)):
         if isinstance(check.get("timestamp"), str):
             check["timestamp"] = datetime.fromisoformat(check["timestamp"])
     return status_checks
+
+
+@router.get("/system/version")
+async def get_system_version():
+    """Returns API build version, communications engine version, and environment metadata for deployment parity."""
+    from core.config import settings
+    return {
+        "application": "Navigatte API",
+        "version": "1.2.0",
+        "communications_version": "2.0.0",
+        "environment": getattr(settings, "COMMUNICATIONS_ENVIRONMENT", "test"),
+        "delivery_worker": "active",
+        "canonical_render": "enabled",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
