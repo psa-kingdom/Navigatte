@@ -368,3 +368,86 @@ async def test_template_duplicate_and_restore(client, auth_headers):
     assert restore_resp.status_code == 200
     assert restore_resp.json()["version"] == 3  # restored snapshot saved as new incremented version 3
 
+
+@pytest.mark.asyncio
+async def test_public_unsubscribe_flow(client):
+    """Signed HMAC-SHA256 unsubscribe links create suppression records and return HTML."""
+    from services.communications_service import CommunicationsService
+    db = get_database()
+
+    target_email = "optout.user@enterprise.com"
+    token, expires_at = CommunicationsService.generate_unsubscribe_token(target_email)
+
+    # 1. Valid token request
+    resp = client.get(f"/api/unsubscribe?email={target_email}&token={token}&exp={expires_at}")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers.get("content-type", "")
+    assert "You've been unsubscribed" in resp.text
+    assert target_email in resp.text
+
+    # Verify DB suppression record created
+    supp = await db.email_suppressions.find_one({"email": target_email})
+    assert supp is not None
+    assert supp["reason"] == "unsubscribed"
+
+    # 2. Invalid / Tampered token request
+    bad_resp = client.get(f"/api/unsubscribe?email={target_email}&token=tampered_token_hex&exp={expires_at}")
+    assert bad_resp.status_code == 400
+    assert "invalid" in bad_resp.text.lower() or "expired" in bad_resp.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_campaign_render_preview_canonical(client, auth_headers):
+    """POST /render-preview returns the canonical rendered content snapshot."""
+    camp_resp = client.post("/api/admin/communications/campaigns", headers=auth_headers, json={
+        "name": "Canonical Preview Test",
+        "subject": "Strategy Update for {{ name }}",
+        "custom_html": "<p>Dear {{ name }} at {{ company }}, welcome to Navigatte.</p>",
+    })
+    assert camp_resp.status_code == 200
+    camp_id = camp_resp.json()["id"]
+
+    prev_resp = client.post(f"/api/admin/communications/campaigns/{camp_id}/render-preview", headers=auth_headers)
+    assert prev_resp.status_code == 200
+    data = prev_resp.json()
+    assert data["campaign_id"] == camp_id
+    assert "Sarah Connor" in data["subject"]
+    assert "Cyberdyne Systems" in data["html_body"]
+    assert "content_match_note" in data
+
+
+@pytest.mark.asyncio
+async def test_campaign_send_test_campaign_isolation(client, auth_headers, monkeypatch):
+    """POST /send-test-campaign enforces server-level safety boundary (never sends to audience)."""
+    from integrations.contracts.communications import EmailDeliveryResult
+    from datetime import datetime, timezone
+
+    # Mock provider
+    async def mock_send(self, message):
+        return EmailDeliveryResult(
+            provider="resend",
+            message_id="msg_test_campaign_999",
+            status="sent",
+            sent_at=datetime.now(timezone.utc),
+        )
+
+    monkeypatch.setattr("integrations.resend.provider.ResendCommunicationsProvider.send_email", mock_send)
+    monkeypatch.setattr("integrations.resend.provider.ResendCommunicationsProvider.is_enabled", lambda self: True)
+
+    camp_resp = client.post("/api/admin/communications/campaigns", headers=auth_headers, json={
+        "name": "Safety Isolation Test",
+        "subject": "Test Dispatch",
+        "custom_html": "<p>Hello {{ name }}</p>",
+        "test_recipients": ["safety.verifier@navigatte.internal"],
+    })
+    assert camp_resp.status_code == 200
+    camp_id = camp_resp.json()["id"]
+
+    send_resp = client.post(f"/api/admin/communications/campaigns/{camp_id}/send-test-campaign", headers=auth_headers)
+    assert send_resp.status_code == 200
+    data = send_resp.json()
+    assert data["success"] is True
+    assert data["sent_count"] == 1
+    assert data["results"][0]["email"] == "safety.verifier@navigatte.internal"
+    assert "Audience contacts were NOT used" in data["note"]
+

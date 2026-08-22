@@ -7,7 +7,7 @@ and global email suppression (unsubscribes, bounces, complaints).
 from datetime import datetime, timezone
 import logging
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, EmailStr
 
@@ -335,3 +335,146 @@ async def remove_suppression(
 
     return {"success": True, "removed_email": clean_email}
 
+
+@router.post("/{audience_id}/import-file")
+async def import_audience_file(
+    audience_id: str,
+    file: UploadFile = File(..., description="CSV or XLSX file with columns: email, name, company"),
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Bulk imports contacts from an uploaded CSV or XLSX file.
+    
+    Expects columns: email (required), name (optional), company (optional).
+    Column order and case are flexible — the endpoint will detect them automatically.
+    Returns the same structured result as the JSON import endpoint.
+    """
+    import io
+    import pandas as pd
+    import re
+
+    aud = await db.audiences.find_one({"_id": audience_id})
+    if not aud:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audience not found.")
+
+    filename = file.filename or ""
+    content = await file.read()
+
+    try:
+        if filename.lower().endswith(".xlsx") or filename.lower().endswith(".xls"):
+            df = pd.read_excel(io.BytesIO(content), engine="openpyxl")
+        elif filename.lower().endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(content))
+        else:
+            # Attempt CSV parse as fallback
+            df = pd.read_csv(io.BytesIO(content))
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to parse file: {e}. Ensure the file is valid CSV or XLSX.",
+        )
+
+    # Normalise column names (lowercase, strip whitespace)
+    df.columns = [c.lower().strip() for c in df.columns]
+
+    if "email" not in df.columns:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must contain an 'email' column.",
+        )
+
+    # Build BulkImportRow list from dataframe
+    contacts = []
+    for _, row in df.iterrows():
+        contacts.append(BulkImportRow(
+            email=str(row.get("email", "") or "").strip(),
+            name=str(row.get("name", "") or "").strip() or None,
+            company=str(row.get("company", "") or "").strip() or None,
+        ))
+
+    # Delegate to existing import logic
+    bulk_request = BulkImportRequest(contacts=contacts)
+
+    # Inline the import logic (same as POST /{audience_id}/import)
+    email_regex = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
+    suppression_emails = set(await db.email_suppressions.distinct("email"))
+
+    total_rows = len(contacts)
+    valid_count = 0
+    invalid_count = 0
+    duplicate_count = 0
+    imported_count = 0
+    suppressed_count = 0
+    invalid_rows = []
+
+    seen_in_batch: set = set()
+    now = datetime.now(timezone.utc)
+
+    for idx, row in enumerate(bulk_request.contacts):
+        raw_em = (row.email or "").strip().lower()
+        if not raw_em or not email_regex.match(raw_em):
+            invalid_count += 1
+            invalid_rows.append({"row_index": idx + 1, "email": row.email, "error": "Invalid email syntax"})
+            continue
+
+        if raw_em in seen_in_batch:
+            duplicate_count += 1
+            continue
+
+        seen_in_batch.add(raw_em)
+        valid_count += 1
+
+        is_supp = raw_em in suppression_emails
+        if is_supp:
+            suppressed_count += 1
+
+        from models.audience import AudienceContactModel
+        contact = AudienceContactModel(
+            audience_id=audience_id,
+            email=raw_em,
+            name=row.name,
+            company=row.company,
+            attributes={},
+            is_suppressed=is_supp,
+            created_at=now,
+        )
+
+        await db.audience_contacts.update_one(
+            {"audience_id": audience_id, "email": raw_em},
+            {"$set": contact.to_mongo()},
+            upsert=True,
+        )
+        imported_count += 1
+
+    # Update member count
+    count = await db.audience_contacts.count_documents({"audience_id": audience_id})
+    await db.audiences.update_one(
+        {"_id": audience_id},
+        {"$set": {"member_count": count, "updated_at": now}}
+    )
+
+    audit = CommunicationsAuditLogModel(
+        actor_email=admin.email,
+        action="audience_contacts_imported_file",
+        target_type="audience",
+        target_id=audience_id,
+        details={
+            "filename": filename,
+            "total_rows": total_rows,
+            "imported_count": imported_count,
+            "suppressed_count": suppressed_count,
+            "duplicate_count": duplicate_count,
+        },
+    )
+    await db.communications_audit_logs.insert_one(audit.to_mongo())
+
+    return {
+        "total_rows": total_rows,
+        "valid_count": valid_count,
+        "invalid_count": invalid_count,
+        "duplicate_count": duplicate_count,
+        "imported_count": imported_count,
+        "suppressed_count": suppressed_count,
+        "invalid_rows": invalid_rows[:20],
+        "filename": filename,
+    }

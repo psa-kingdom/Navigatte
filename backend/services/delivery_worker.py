@@ -1,9 +1,12 @@
 """Durable Outbox Delivery Worker for the Email Management System (EMS).
 
 Implements MongoDB-backed atomic claim/lock semantics, exponential backoff retry scheduling,
-and transient vs permanent failure classification. Replaceable by Redis/RQ/Celery later.
+transient vs permanent failure classification, campaign metric rollup, and a persistent
+run_forever() loop for FastAPI lifespan integration. Replaceable by Redis/RQ/Celery if scale
+requirements change.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 import logging
 from typing import Any, Dict, List, Optional
@@ -22,6 +25,17 @@ from services.communications_service import CommunicationsService
 logger = logging.getLogger(__name__)
 
 LOCK_DURATION_SECONDS = 120  # Claim lock expires after 2 minutes if process crashes
+
+# Terminal statuses — once an item is in these states, it doesn't need processing
+_TERMINAL_STATUSES = {
+    OutboxStatus.SENT.value,
+    OutboxStatus.DELIVERED.value,
+    OutboxStatus.BOUNCED.value,
+    OutboxStatus.COMPLAINED.value,
+    OutboxStatus.OPENED.value,
+    OutboxStatus.CLICKED.value,
+    OutboxStatus.PROVIDER_DISABLED.value,
+}
 
 
 class DeliveryWorker:
@@ -105,6 +119,11 @@ class DeliveryWorker:
         if outbox_item.enquiry_id:
             tags["enquiry_id"] = str(outbox_item.enquiry_id)
 
+        # Include campaign_id tag for analytics
+        campaign_id = (outbox_item.metadata or {}).get("campaign_id")
+        if campaign_id:
+            tags["campaign_id"] = str(campaign_id)
+
         msg = EmailMessage(
             to=[EmailRecipient(email=outbox_item.recipient_email, name=outbox_item.recipient_name)],
             subject=outbox_item.subject,
@@ -131,6 +150,11 @@ class DeliveryWorker:
                         "updated_at": now,
                     }}
                 )
+
+                # Campaign metric rollup: increment sent_count
+                if campaign_id:
+                    await self._increment_campaign_sent_count(db, campaign_id)
+
                 return {"status": "sent", "outbox_id": outbox_item.id, "message_id": result.message_id}
 
             elif result.status == "provider_disabled":
@@ -152,8 +176,8 @@ class DeliveryWorker:
                 # Failure during delivery
                 error_class = CommunicationsService.classify_error(result.error)
                 is_retryable = (error_class == "transient") and (outbox_item.attempt_count < outbox_item.max_attempts)
-                
-                # Exponential backoff: 2^(attempts) * 60 seconds (1m, 2m, 4m...)
+
+                # Exponential backoff: 2^(attempts) * 60 seconds (1m, 2m, 4m…)
                 backoff_seconds = (2 ** outbox_item.attempt_count) * 60
                 next_attempt = now + timedelta(seconds=backoff_seconds) if is_retryable else None
 
@@ -174,13 +198,14 @@ class DeliveryWorker:
 
         except Exception as e:
             logger.error(f"Unexpected worker exception during outbox dispatch {outbox_item.id}: {e}")
+            is_retryable = outbox_item.attempt_count < outbox_item.max_attempts
             await db.email_outbox.update_one(
                 {"_id": outbox_item.id},
                 {"$set": {
                     "status": OutboxStatus.FAILED.value,
                     "error_message": str(e),
                     "last_error": str(e),
-                    "is_retryable": True if outbox_item.attempt_count < outbox_item.max_attempts else False,
+                    "is_retryable": is_retryable,
                     "failed_at": now,
                     "lock_expires_at": None,
                     "updated_at": now,
@@ -198,6 +223,7 @@ class DeliveryWorker:
         succeeded = 0
         failed = 0
         disabled = 0
+        campaign_ids_processed: set = set()
 
         for _ in range(batch_size):
             item = await self.claim_next_item(db)
@@ -207,6 +233,12 @@ class DeliveryWorker:
             processed += 1
             res = await self.process_item(db, item)
             st = res.get("status")
+
+            # Track which campaigns had items processed this batch
+            campaign_id = (item.metadata or {}).get("campaign_id")
+            if campaign_id:
+                campaign_ids_processed.add(campaign_id)
+
             if st == "sent":
                 succeeded += 1
             elif st == "provider_disabled":
@@ -214,9 +246,93 @@ class DeliveryWorker:
             else:
                 failed += 1
 
+        # Check if any processed campaigns are now fully complete
+        for campaign_id in campaign_ids_processed:
+            await self._check_campaign_completion(db, campaign_id)
+
         return {
             "processed": processed,
             "succeeded": succeeded,
             "failed": failed,
             "disabled": disabled,
         }
+
+    async def _increment_campaign_sent_count(self, db: AsyncIOMotorDatabase, campaign_id: str) -> None:
+        """Atomically increments the sent_count for a campaign."""
+        try:
+            await db.campaigns.update_one(
+                {"_id": campaign_id},
+                {"$inc": {"sent_count": 1}, "$set": {"updated_at": datetime.now(timezone.utc)}}
+            )
+        except Exception as e:
+            logger.warning(f"[DeliveryWorker] Failed to increment campaign sent_count for {campaign_id}: {e}")
+
+    async def _check_campaign_completion(self, db: AsyncIOMotorDatabase, campaign_id: str) -> None:
+        """Checks if all outbox items for a campaign are in terminal states.
+        
+        If so, transitions the campaign status to COMPLETED.
+        """
+        try:
+            from models.campaign import CampaignStatus
+
+            # Count non-terminal outbox items for this campaign
+            non_terminal_count = await db.email_outbox.count_documents({
+                "metadata.campaign_id": campaign_id,
+                "status": {"$nin": list(_TERMINAL_STATUSES)},
+            })
+
+            if non_terminal_count == 0:
+                # All items are in terminal state
+                campaign_doc = await db.campaigns.find_one({"_id": campaign_id})
+                if campaign_doc and campaign_doc.get("status") == "sending":
+                    now = datetime.now(timezone.utc)
+                    await db.campaigns.update_one(
+                        {"_id": campaign_id, "status": "sending"},
+                        {"$set": {
+                            "status": CampaignStatus.COMPLETED.value,
+                            "completed_at": now,
+                            "updated_at": now,
+                        }}
+                    )
+                    logger.info(f"[DeliveryWorker] Campaign {campaign_id} transitioned to COMPLETED.")
+        except Exception as e:
+            logger.warning(f"[DeliveryWorker] Campaign completion check failed for {campaign_id}: {e}")
+
+    async def run_forever(
+        self,
+        db: AsyncIOMotorDatabase,
+        poll_interval: int = 10,
+        shutdown_event: Optional[asyncio.Event] = None,
+    ) -> None:
+        """Runs the delivery worker in a persistent loop.
+        
+        Designed for use with FastAPI lifespan background tasks. Polls for
+        queued outbox items, processes them, and sleeps between batches.
+        Exits cleanly when shutdown_event is set.
+        
+        Args:
+            db: Database connection
+            poll_interval: Seconds to wait when no items are queued
+            shutdown_event: asyncio.Event that signals graceful shutdown
+        """
+        logger.info("[DeliveryWorker] run_forever() started.")
+        while True:
+            if shutdown_event and shutdown_event.is_set():
+                break
+            try:
+                result = await self.process_batch(db, batch_size=10)
+                sleep_s = 1 if result.get("processed", 0) > 0 else poll_interval
+            except Exception as exc:
+                logger.error(f"[DeliveryWorker] Exception in run_forever: {exc}")
+                sleep_s = 30
+
+            if shutdown_event:
+                try:
+                    await asyncio.wait_for(shutdown_event.wait(), timeout=sleep_s)
+                    break  # Shutdown event was set
+                except asyncio.TimeoutError:
+                    pass
+            else:
+                await asyncio.sleep(sleep_s)
+
+        logger.info("[DeliveryWorker] run_forever() exiting.")

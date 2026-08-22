@@ -1,12 +1,18 @@
 """Communications and Transactional Email Engine Service.
 
-Handles template management, idempotent outbox storage, Resend dispatch,
-and delivery webhook tracking with CRM timeline correlation.
+Handles template management, canonical message rendering, idempotent outbox storage,
+Resend dispatch, delivery webhook tracking with CRM timeline correlation,
+automatic bounce/complaint suppression, and signed unsubscribe tokens.
 """
 
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+import hashlib
+import hmac
+import html
 import logging
 import re
+import time
 from typing import Any, Dict, List, Literal, Optional, Tuple
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -48,7 +54,7 @@ DEFAULT_TEMPLATES = [
             "<h2>Thank you for contacting Navigatte, {{ name }}.</h2>"
             "<p>We have successfully received your enquiry regarding <strong>{{ service_interest }}</strong>.</p>"
             "<p>Our enterprise technology team is reviewing your project requirements and will respond within 24 hours.</p>"
-            "<p style='color: #666; font-size: 12px; margin-top: 30px;'>Navigatte Consultancy & Platforms</p>"
+            "<p style='color: #666; font-size: 12px; margin-top: 30px;'>Navigatte Consultancy &amp; Platforms</p>"
             "</div>"
         ),
         "body_text": "Thank you for contacting Navigatte, {{ name }}. We have received your enquiry regarding {{ service_interest }}.",
@@ -103,9 +109,43 @@ DEFAULT_TEMPLATES = [
 ]
 
 
+@dataclass
+class RenderedMessageSnapshot:
+    """Immutable content snapshot produced by the canonical render pipeline.
+    
+    This is the single source of truth for all email content — preview,
+    test-send, and campaign launch all use this exact structure.
+    Preview shown == outbox stored == email sent. No drift possible.
+    """
+    subject: str
+    body_html: str
+    body_text: Optional[str]
+    template_key: Optional[str]
+    template_version: Optional[int]
+    from_email: str
+    variables_used: Dict[str, Any]
+    unresolved_variables: List[str]  # Any {{ var }} still present after render
+
+
+def _get_unsubscribe_secret() -> bytes:
+    """Returns the HMAC secret for unsubscribe token signing."""
+    secret = getattr(settings, "UNSUBSCRIBE_SECRET", None) or getattr(settings, "_raw_jwt_secret", None)
+    if not secret:
+        logger.warning(
+            "UNSUBSCRIBE_SECRET is not set. Falling back to JWT_SECRET for unsubscribe token signing. "
+            "Set UNSUBSCRIBE_SECRET in environment variables for production use."
+        )
+        secret = "navigatte_unsub_dev_key_fallback"
+    return secret.encode("utf-8")
+
+
 class CommunicationsService:
     def __init__(self, provider: Optional[ResendCommunicationsProvider] = None):
         self.provider = provider or ResendCommunicationsProvider()
+
+    # =========================================================================
+    # TEMPLATE MANAGEMENT
+    # =========================================================================
 
     @staticmethod
     async def ensure_default_templates(db: AsyncIOMotorDatabase):
@@ -117,6 +157,20 @@ class CommunicationsService:
                 await db.email_templates.insert_one(tpl.to_mongo())
                 logger.info(f"Seeded default email template: {tpl.key}")
 
+    # =========================================================================
+    # CANONICAL RENDER PIPELINE (The core architectural invariant)
+    # =========================================================================
+
+    @staticmethod
+    def html_escape_variables(variables: Dict[str, Any]) -> Dict[str, Any]:
+        """Escapes all variable values before HTML body interpolation.
+        
+        Prevents HTML injection from user-submitted content (e.g. contact form
+        name/company fields containing script tags or HTML entities).
+        Subject lines are NOT escaped here (plain text field).
+        """
+        return {k: html.escape(str(v)) if isinstance(v, str) else v for k, v in variables.items()}
+
     @staticmethod
     def render_template(body: str, variables: Dict[str, Any]) -> str:
         """Safely interpolates {{ variable }} placeholders."""
@@ -125,6 +179,171 @@ class CommunicationsService:
             placeholder = r"\{\{\s*" + re.escape(key) + r"\s*\}\}"
             rendered = re.sub(placeholder, str(val), rendered)
         return rendered
+
+    @staticmethod
+    def detect_unresolved_variables(rendered_content: str) -> List[str]:
+        """Finds any {{ var }} placeholders remaining after template rendering."""
+        pattern = r"\{\{\s*(\w+)\s*\}\}"
+        return list(set(re.findall(pattern, rendered_content)))
+
+    @staticmethod
+    async def render_message(
+        db: AsyncIOMotorDatabase,
+        *,
+        template_key: Optional[str] = None,
+        template_version: Optional[int] = None,
+        custom_html: Optional[str] = None,
+        subject: Optional[str] = None,
+        variables: Optional[Dict[str, Any]] = None,
+        escape_html_in_variables: bool = True,
+    ) -> RenderedMessageSnapshot:
+        """THE canonical render pipeline. One function for all email content.
+        
+        This is the architectural invariant that ensures:
+            preview == test-send == outbox snapshot == delivered email
+        
+        Args:
+            db: Database connection
+            template_key: Navigatte template slug (e.g. 'enquiry_acknowledgement')
+            template_version: Specific version to use (None = active/latest)
+            custom_html: Raw HTML body (overrides template if provided)
+            subject: Email subject line (overrides template subject if provided)
+            variables: Template variables for substitution
+            escape_html_in_variables: Whether to HTML-escape variable values before body substitution
+            
+        Returns:
+            RenderedMessageSnapshot with fully resolved subject, body_html, body_text,
+            template reference, and list of any unresolved {{ var }} placeholders.
+        """
+        vars_dict = variables or {}
+        from_email = getattr(settings, "RESEND_FROM_EMAIL", "Navigatte <updates@updates.navigatte.com>")
+
+        # Resolve content source: custom_html takes priority over template
+        raw_subject: str = subject or "Navigatte Communication"
+        raw_html: str = ""
+        raw_text: Optional[str] = None
+        resolved_template_key: Optional[str] = template_key
+        resolved_template_version: Optional[int] = template_version
+
+        if custom_html:
+            # Custom HTML mode: use exactly what was provided
+            raw_html = custom_html
+            if not subject:
+                raw_subject = "Navigatte Communication"
+            resolved_template_key = "custom"
+            resolved_template_version = None
+
+        elif template_key and template_key != "custom":
+            # Template mode: load from DB
+            tpl_doc = None
+
+            if template_version is not None:
+                # Load specific historical version snapshot
+                from models.template_version import EmailTemplateVersionModel
+                v_doc = await db.email_template_versions.find_one(
+                    {"template_key": template_key, "version": template_version}
+                )
+                if v_doc:
+                    raw_html = v_doc.get("body_html", "")
+                    raw_text = v_doc.get("body_text")
+                    if not subject:
+                        raw_subject = v_doc.get("subject", raw_subject)
+                    resolved_template_version = template_version
+                else:
+                    # Fall back to active template
+                    logger.warning(
+                        f"Template version {template_key}@v{template_version} not found, "
+                        "falling back to active version."
+                    )
+                    tpl_doc = await db.email_templates.find_one({"key": template_key, "is_active": True})
+            else:
+                tpl_doc = await db.email_templates.find_one({"key": template_key, "is_active": True})
+
+            if tpl_doc:
+                raw_html = tpl_doc.get("body_html", "")
+                raw_text = tpl_doc.get("body_text")
+                if not subject:
+                    raw_subject = tpl_doc.get("subject", raw_subject)
+                resolved_template_version = tpl_doc.get("version", 1)
+
+        else:
+            # No content provided — use minimal fallback
+            raw_html = "<p>Navigatte Communication</p>"
+
+        # Escape variable values before HTML interpolation (security)
+        html_vars = CommunicationsService.html_escape_variables(vars_dict) if escape_html_in_variables else vars_dict
+        # Subject uses unescaped variables (plain text)
+        text_vars = vars_dict
+
+        # Render subject (plain text — no escaping)
+        rendered_subject = CommunicationsService.render_template(raw_subject, text_vars)
+
+        # Render HTML body (escaped variables)
+        rendered_html = CommunicationsService.render_template(raw_html, html_vars)
+
+        # Render text body
+        rendered_text = CommunicationsService.render_template(raw_text, text_vars) if raw_text else None
+
+        # Detect any remaining unresolved placeholders
+        unresolved = CommunicationsService.detect_unresolved_variables(rendered_html)
+        if rendered_text:
+            unresolved += CommunicationsService.detect_unresolved_variables(rendered_text)
+        unresolved = list(set(unresolved))
+
+        return RenderedMessageSnapshot(
+            subject=rendered_subject,
+            body_html=rendered_html,
+            body_text=rendered_text,
+            template_key=resolved_template_key,
+            template_version=resolved_template_version,
+            from_email=from_email,
+            variables_used=vars_dict,
+            unresolved_variables=unresolved,
+        )
+
+    # =========================================================================
+    # UNSUBSCRIBE TOKEN GENERATION
+    # =========================================================================
+
+    @staticmethod
+    def generate_unsubscribe_token(email: str, expiry_days: int = 30) -> Tuple[str, int]:
+        """Generates a signed HMAC-SHA256 unsubscribe token with expiry.
+        
+        Returns:
+            (token_hex, expires_at_unix_timestamp)
+        """
+        expires_at = int(time.time()) + (expiry_days * 86400)
+        message = f"{email.lower().strip()}:{expires_at}".encode("utf-8")
+        secret = _get_unsubscribe_secret()
+        token = hmac.new(secret, message, hashlib.sha256).hexdigest()
+        return token, expires_at
+
+    @staticmethod
+    def verify_unsubscribe_token(email: str, token: str, expires_at: int) -> bool:
+        """Validates an unsubscribe token. Returns True if valid and not expired."""
+        if int(time.time()) > expires_at:
+            return False
+        message = f"{email.lower().strip()}:{expires_at}".encode("utf-8")
+        secret = _get_unsubscribe_secret()
+        expected = hmac.new(secret, message, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, token)
+
+    @staticmethod
+    def build_unsubscribe_url(email: str, base_url: Optional[str] = None) -> str:
+        """Builds a signed unsubscribe URL for use in email templates."""
+        import urllib.parse
+        token, expires_at = CommunicationsService.generate_unsubscribe_token(email)
+        base = base_url or "https://navigatte.com"
+        params = urllib.parse.urlencode({
+            "email": email.lower().strip(),
+            "token": token,
+            "exp": expires_at,
+        })
+        return f"{base}/api/unsubscribe?{params}"
+
+    # =========================================================================
+    # ERROR CLASSIFICATION
+    # =========================================================================
 
     @staticmethod
     def classify_error(error: Optional[str]) -> Literal["transient", "permanent"]:
@@ -137,6 +356,10 @@ class CommunicationsService:
                 return "permanent"
         return "transient"
 
+    # =========================================================================
+    # TRANSACTIONAL EMAIL DISPATCH (uses canonical render pipeline)
+    # =========================================================================
+
     async def send_transactional_email(
         self,
         db: AsyncIOMotorDatabase,
@@ -147,8 +370,12 @@ class CommunicationsService:
         enquiry_id: Optional[str] = None,
         custom_subject: Optional[str] = None,
         idempotency_key: Optional[str] = None,
+        custom_html: Optional[str] = None,
     ) -> OutboxItemModel:
-        """Queues, logs, and dispatches a transactional email through the configured provider."""
+        """Queues, logs, and dispatches a transactional email through the configured provider.
+        
+        Uses the canonical render pipeline to ensure preview == outbox == sent.
+        """
         vars_dict = variables or {}
         now = datetime.now(timezone.utc)
         idem_key = idempotency_key or f"email:{template_key}:{recipient_email}:{int(now.timestamp())}"
@@ -159,51 +386,50 @@ class CommunicationsService:
             logger.info(f"Email with idempotency key '{idem_key}' already processed.")
             return OutboxItemModel.from_mongo(existing)
 
-        # 2. Fetch template
-        tpl_doc = await db.email_templates.find_one({"key": template_key, "is_active": True})
-        if tpl_doc:
-            subject_raw = custom_subject or tpl_doc.get("subject", "Notification from Navigatte")
-            subject = self.render_template(subject_raw, vars_dict)
-            body_html = self.render_template(tpl_doc.get("body_html", ""), vars_dict)
-            body_text = self.render_template(tpl_doc.get("body_text", ""), vars_dict) if tpl_doc.get("body_text") else None
-        else:
-            subject = custom_subject or f"Navigatte Notification ({template_key})"
-            body_html = f"<p>Notification for {recipient_name or recipient_email}</p>"
-            body_text = f"Notification for {recipient_name or recipient_email}"
+        # 2. Use canonical render pipeline
+        snapshot = await self.render_message(
+            db,
+            template_key=template_key if not custom_html else None,
+            custom_html=custom_html,
+            subject=custom_subject,
+            variables=vars_dict,
+        )
 
-        from_email = getattr(settings, "RESEND_FROM_EMAIL", "Navigatte <updates@updates.navigatte.com>")
         environment = getattr(settings, "COMMUNICATIONS_ENVIRONMENT", "test")
 
-        # 3. Create Outbox Item (initial status SENDING — will be updated after dispatch)
+        # 3. Create Outbox Item (initial status SENDING)
         outbox_item = OutboxItemModel(
             idempotency_key=idem_key,
-            template_key=template_key,
+            template_key=snapshot.template_key or template_key,
             recipient_email=recipient_email,
             recipient_name=recipient_name,
-            subject=subject,
-            body_html=body_html,
-            body_text=body_text,
-            from_email=from_email,
+            subject=snapshot.subject,
+            body_html=snapshot.body_html,
+            body_text=snapshot.body_text,
+            from_email=snapshot.from_email,
             status=OutboxStatus.SENDING,
             provider=self.provider.name,
             enquiry_id=enquiry_id,
             attempt_count=1,
             environment=environment,
-            metadata=vars_dict,
+            metadata={
+                **vars_dict,
+                "template_version": snapshot.template_version,
+            },
         )
         await db.email_outbox.insert_one(outbox_item.to_mongo())
 
         # 4. Dispatch via Provider
-        tags = {"template_key": template_key or "custom"}
+        tags = {"template_key": snapshot.template_key or template_key or "custom"}
         if enquiry_id:
             tags["enquiry_id"] = str(enquiry_id)
 
         msg = EmailMessage(
             to=[EmailRecipient(email=recipient_email, name=recipient_name)],
-            subject=subject,
-            html_body=body_html,
-            text_body=body_text,
-            from_email=from_email,
+            subject=snapshot.subject,
+            html_body=snapshot.body_html,
+            text_body=snapshot.body_text,
+            from_email=snapshot.from_email,
             idempotency_key=idem_key,
             tags=tags,
         )
@@ -255,7 +481,7 @@ class CommunicationsService:
             activity = EnquiryActivity(
                 type="email_sent",
                 title="Email Dispatched",
-                summary=f"Transactional email sent: '{subject}' to {recipient_email}",
+                summary=f"Transactional email sent: '{snapshot.subject}' to {recipient_email}",
                 source="system",
                 metadata={"template_key": template_key, "provider_message_id": result.message_id},
             )
@@ -265,6 +491,10 @@ class CommunicationsService:
             )
 
         return outbox_item
+
+    # =========================================================================
+    # RETRY
+    # =========================================================================
 
     async def retry_outbox_item(
         self,
@@ -347,13 +577,21 @@ class CommunicationsService:
 
         return outbox_item
 
+    # =========================================================================
+    # WEBHOOK PROCESSING (with automatic bounce/complaint suppression)
+    # =========================================================================
+
     async def process_resend_webhook(
         self,
         db: AsyncIOMotorDatabase,
         payload: Dict[str, Any],
         headers: Dict[str, str],
     ) -> Dict[str, Any]:
-        """Processes inbound delivery tracking webhook from Resend (Svix)."""
+        """Processes inbound delivery tracking webhook from Resend (Svix).
+        
+        Automatically creates suppression records for bounce and complaint events.
+        This closes the gap where bounced contacts would not be auto-suppressed.
+        """
         event = self.provider.normalize_webhook(payload, headers)
         now = datetime.now(timezone.utc)
 
@@ -399,10 +637,42 @@ class CommunicationsService:
                 update_fields["opened_at"] = now
             elif new_status == OutboxStatus.CLICKED:
                 update_fields["clicked_at"] = now
+            elif new_status == OutboxStatus.BOUNCED:
+                update_fields["bounced_at"] = now
+            elif new_status == OutboxStatus.COMPLAINED:
+                update_fields["complained_at"] = now
 
             await db.email_outbox.update_one({"_id": outbox_doc["_id"]}, {"$set": update_fields})
 
-            # Append activity to CRM if enquiry_id exists and event is meaningful
+            # ---------------------------------------------------------------
+            # AUTOMATIC BOUNCE/COMPLAINT SUPPRESSION
+            # Closes the gap identified in the audit: bounced/complained emails
+            # were NOT automatically added to email_suppressions.
+            # ---------------------------------------------------------------
+            recipient_email = outbox_doc.get("recipient_email", "").lower().strip()
+            if recipient_email and new_status in (OutboxStatus.BOUNCED, OutboxStatus.COMPLAINED):
+                reason = "hard_bounce" if new_status == OutboxStatus.BOUNCED else "complaint"
+                await db.email_suppressions.update_one(
+                    {"email": recipient_email},
+                    {"$setOnInsert": {
+                        "email": recipient_email,
+                        "reason": reason,
+                        "source": "resend_webhook",
+                        "created_at": now,
+                    }},
+                    upsert=True,
+                )
+                # Mark all audience contacts with this email as suppressed
+                await db.audience_contacts.update_many(
+                    {"email": recipient_email},
+                    {"$set": {"is_suppressed": True}}
+                )
+                logger.info(
+                    f"[AutoSuppression] {reason} event for {recipient_email} → "
+                    "added to email_suppressions."
+                )
+
+            # Append activity to CRM if enquiry_id exists
             enquiry_id = outbox_doc.get("enquiry_id")
             if enquiry_id and new_status in (OutboxStatus.DELIVERED, OutboxStatus.BOUNCED, OutboxStatus.OPENED):
                 desc_map = {

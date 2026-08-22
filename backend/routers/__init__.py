@@ -12,6 +12,7 @@ from routers.system_health import router as system_health_router
 from routers.communications import router as communications_router
 from routers.campaigns import router as campaigns_router
 from routers.audiences import router as audiences_router
+from routers.unsubscribe import router as unsubscribe_router
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(status_router)
@@ -25,6 +26,7 @@ api_router.include_router(system_health_router)
 api_router.include_router(communications_router)
 api_router.include_router(campaigns_router)
 api_router.include_router(audiences_router)
+api_router.include_router(unsubscribe_router)
 
 __all__ = [
     "api_router",
@@ -39,5 +41,6 @@ __all__ = [
     "communications_router",
     "campaigns_router",
     "audiences_router",
+    "unsubscribe_router",
 ]
 

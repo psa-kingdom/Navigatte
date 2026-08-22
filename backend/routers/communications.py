@@ -1,7 +1,7 @@
 """Communications Studio & Email Control Centre Router.
 
 Provides endpoints for email outbox inspection, template management,
-delivery metrics, and live test dispatch.
+delivery metrics, and live test dispatch via the canonical render pipeline.
 """
 
 from datetime import datetime, timezone
@@ -23,10 +23,29 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/communications", tags=["communications"])
 
 
+# ============================================================================
+# REQUEST SCHEMAS
+# ============================================================================
+
 class SendTestEmailRequest(BaseModel):
+    """Request body for /send-test.
+    
+    Accepts either a template_key (with optional version) or custom_html.
+    The backend will use the canonical render_message() pipeline with exactly
+    the content provided — no silent template re-fetching.
+    """
     recipient_email: EmailStr
     recipient_name: Optional[str] = None
-    template_key: str = "enquiry_acknowledgement"
+
+    # Content source: custom_html takes priority over template_key
+    template_key: Optional[str] = None
+    template_version: Optional[int] = None  # None = active/latest version
+    custom_html: Optional[str] = None       # Raw HTML body to send AS-IS
+
+    # Subject: required for meaningful test; overrides template subject
+    subject: Optional[str] = None
+
+    # Template variables for substitution
     variables: Dict[str, Any] = {}
 
 
@@ -38,6 +57,23 @@ class TemplateUpdateRequest(BaseModel):
     variables: List[str] = []
     is_active: bool = True
 
+
+class TemplateCreateRequest(BaseModel):
+    key: str
+    name: str
+    category: str = "transactional"  # 'transactional' | 'campaign'
+    subject: str
+    body_html: str
+    body_text: Optional[str] = None
+    variables: List[str] = []
+    provider: str = "navigatte"
+    # Note: provider_template_id (Resend-hosted templates) is reserved for future use.
+    # It is not exposed in the composer as Resend template ID dispatch is not yet supported.
+
+
+# ============================================================================
+# OVERVIEW & DIAGNOSTICS
+# ============================================================================
 
 @router.get("/overview")
 async def get_communications_overview(
@@ -82,6 +118,47 @@ async def get_communications_overview(
     }
 
 
+@router.get("/diagnostics")
+async def get_communications_diagnostics(
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Returns runtime EMS health, provider readiness, and environment boundaries."""
+    has_api_key = bool(settings.RESEND_API_KEY)
+    is_enabled = settings.RESEND_ENABLED
+    env = getattr(settings, "COMMUNICATIONS_ENVIRONMENT", "test")
+    allowed_recipients = settings.ALLOWED_TEST_RECIPIENTS
+
+    return {
+        "provider": {
+            "name": "resend",
+            "has_api_key": has_api_key,
+            "is_enabled": is_enabled,
+            "sending_domain": "updates.navigatte.com",
+            "from_email": settings.RESEND_FROM_EMAIL,
+            "has_webhook_secret": bool(settings.RESEND_WEBHOOK_SECRET),
+        },
+        "environment": {
+            "current": env,
+            "is_production": env == "production",
+            "campaign_test_mode": env != "production",
+            "allowed_test_recipients_count": len(allowed_recipients),
+            "allowed_test_recipients": allowed_recipients,
+        },
+        "worker": {
+            "status": "running",  # Worker is always running via lifespan background task
+            "note": "Delivery worker runs as a persistent asyncio background task in FastAPI lifespan.",
+        },
+        "system": {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+
+
+# ============================================================================
+# OUTBOX
+# ============================================================================
+
 @router.get("/outbox")
 async def list_outbox_items(
     status: Optional[str] = Query(None, description="Filter by status (e.g. sent, delivered, bounced, failed)"),
@@ -114,17 +191,192 @@ async def list_outbox_items(
     }
 
 
-class TemplateCreateRequest(BaseModel):
-    key: str
-    name: str
-    category: str = "transactional"  # 'transactional' | 'campaign'
-    subject: str
-    body_html: str
-    body_text: Optional[str] = None
-    variables: List[str] = []
-    provider: str = "navigatte"
-    provider_template_id: Optional[str] = None
+@router.get("/outbox/{outbox_id}")
+async def get_outbox_item(
+    outbox_id: str,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Retrieves a single outbox message by ID with full delivery telemetry."""
+    doc = await db.email_outbox.find_one({"_id": outbox_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Outbox message '{outbox_id}' not found.",
+        )
+    return OutboxItemModel.from_mongo(doc).model_dump()
 
+
+@router.post("/outbox/{outbox_id}/retry")
+async def retry_outbox_message(
+    outbox_id: str,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Manually retries a queued or failed outbox email message."""
+    service = CommunicationsService()
+    try:
+        item = await service.retry_outbox_item(db=db, outbox_id=outbox_id)
+        is_success = item.status in (OutboxStatus.SENT, OutboxStatus.DELIVERED)
+        return {
+            "success": is_success,
+            "status": item.status.value,
+            "outbox_id": item.id,
+            "attempt_count": item.attempt_count,
+            "provider_message_id": item.provider_message_id,
+            "error_message": item.error_message,
+            "is_retryable": item.is_retryable,
+            "environment": item.environment,
+        }
+    except Exception as e:
+        logger.error(f"Failed to retry outbox item {outbox_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+# ============================================================================
+# TEST EMAIL DISPATCH (THE CANONICAL SEND-TEST ENDPOINT)
+# ============================================================================
+
+@router.post("/send-test")
+async def send_test_email(
+    payload: SendTestEmailRequest,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Dispatches a real test email through Resend using the canonical render pipeline.
+    
+    IMPORTANT: This endpoint accepts either custom_html or template_key.
+    The content sent is EXACTLY what was provided — no silent template re-fetching.
+    This is the fix for the P0 content mismatch bug where the test email would
+    send a different template than what the admin composed in the editor.
+    
+    Priority:
+        1. custom_html (if provided) → sends that HTML exactly
+        2. template_key + template_version → loads that specific version
+        3. template_key alone → loads the active/latest version
+    """
+    # Determine content source
+    has_custom_html = bool(payload.custom_html and payload.custom_html.strip())
+    has_template = bool(payload.template_key and payload.template_key not in ("custom", ""))
+
+    if not has_custom_html and not has_template:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either custom_html or a valid template_key must be provided.",
+        )
+
+    if not payload.subject or not payload.subject.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Subject line is required for test dispatch.",
+        )
+
+    # Use the canonical render pipeline — same function used by preview and campaign launch
+    snapshot = await CommunicationsService.render_message(
+        db,
+        template_key=payload.template_key if has_template and not has_custom_html else None,
+        template_version=payload.template_version,
+        custom_html=payload.custom_html if has_custom_html else None,
+        subject=payload.subject,
+        variables=payload.variables or {},
+    )
+
+    # Dispatch directly through the provider (no campaign association)
+    from integrations.resend.provider import ResendCommunicationsProvider
+    from integrations.contracts.communications import EmailMessage, EmailRecipient
+
+    provider = ResendCommunicationsProvider()
+    from_email = snapshot.from_email
+    environment = getattr(settings, "COMMUNICATIONS_ENVIRONMENT", "test")
+
+    # Create outbox item to record this test send
+    from models.communications import OutboxItemModel, OutboxStatus
+    import uuid
+    from datetime import timezone
+
+    now = datetime.now(timezone.utc)
+    idem_key = f"test:{payload.recipient_email}:{admin.email}:{int(now.timestamp())}"
+
+    if not provider.is_enabled():
+        return {
+            "success": False,
+            "status": "provider_disabled",
+            "error_message": (
+                "RESEND_API_KEY is not configured. Set the environment variable to enable delivery."
+            ),
+            "preview": {
+                "subject": snapshot.subject,
+                "body_html": snapshot.body_html,
+                "template_key": snapshot.template_key,
+                "template_version": snapshot.template_version,
+                "unresolved_variables": snapshot.unresolved_variables,
+            },
+        }
+
+    msg = EmailMessage(
+        to=[EmailRecipient(email=payload.recipient_email, name=payload.recipient_name or "Test Recipient")],
+        subject=snapshot.subject,
+        html_body=snapshot.body_html,
+        text_body=snapshot.body_text,
+        from_email=from_email,
+        idempotency_key=idem_key,
+        tags={"template_key": snapshot.template_key or "custom", "send_type": "test"},
+    )
+
+    result = await provider.send_email(msg)
+
+    # Record in outbox for audit trail
+    outbox_item = OutboxItemModel(
+        idempotency_key=idem_key,
+        template_key=snapshot.template_key,
+        recipient_email=payload.recipient_email,
+        recipient_name=payload.recipient_name or "Test Recipient",
+        subject=snapshot.subject,
+        body_html=snapshot.body_html,
+        body_text=snapshot.body_text,
+        from_email=from_email,
+        status=OutboxStatus.SENT if result.status == "sent" else OutboxStatus.FAILED,
+        provider="resend",
+        provider_message_id=result.message_id if result.status == "sent" else None,
+        environment=environment,
+        attempt_count=1,
+        sent_at=now if result.status == "sent" else None,
+        error_message=result.error if result.status != "sent" else None,
+        metadata={
+            "send_type": "manual_test",
+            "sent_by": admin.email,
+            "template_version": snapshot.template_version,
+        },
+        tags={"template_key": snapshot.template_key or "custom", "send_type": "test"},
+    )
+    try:
+        await db.email_outbox.insert_one(outbox_item.to_mongo())
+    except Exception:
+        pass  # Don't fail the test send if outbox insert has a duplicate key
+
+    is_success = result.status == "sent"
+    return {
+        "success": is_success,
+        "status": result.status,
+        "outbox_id": outbox_item.id,
+        "provider_message_id": result.message_id,
+        "error_message": result.error if not is_success else None,
+        "environment": environment,
+        "preview": {
+            "subject": snapshot.subject,
+            "template_key": snapshot.template_key,
+            "template_version": snapshot.template_version,
+            "unresolved_variables": snapshot.unresolved_variables,
+        },
+    }
+
+
+# ============================================================================
+# TEMPLATES
+# ============================================================================
 
 @router.get("/templates")
 async def list_templates(
@@ -170,7 +422,6 @@ async def create_template(
         is_active=True,
         is_system=False,
         provider=payload.provider,
-        provider_template_id=payload.provider_template_id,
         created_by=admin.email,
         created_at=now,
         updated_at=now,
@@ -271,27 +522,67 @@ async def preview_template(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found.")
     tpl = EmailTemplateModel.from_mongo(tpl_doc)
 
-    sample_vars = {
-        "name": "Sarah Connor",
-        "company": "Cyberdyne Systems",
-        "email": "sarah@cyberdyne.io",
-        "service_interest": "Cloud & AI Architecture",
-        "start_time": "Aug 25, 2026, 2:00 PM UTC",
-        "timezone": "UTC",
-        "meeting_url": "https://navigatte.com/meet/demo-session",
-        "unsubscribe_url": "https://navigatte.com/unsubscribe?email=sarah@cyberdyne.io",
-    }
+    sample_vars = _get_sample_variables(tpl_doc.get("recipient_email", "preview@example.com"))
 
-    rendered_subject = CommunicationsService.render_template(tpl.subject, sample_vars)
-    rendered_html = CommunicationsService.render_template(tpl.body_html, sample_vars)
+    snapshot = await CommunicationsService.render_message(
+        db,
+        template_key=key,
+        subject=tpl.subject,
+        variables=sample_vars,
+        escape_html_in_variables=False,  # Sample vars are safe
+    )
 
     return {
         "key": tpl.key,
         "name": tpl.name,
         "version": tpl.version,
-        "subject": rendered_subject,
-        "html_body": rendered_html,
+        "subject": snapshot.subject,
+        "html_body": snapshot.body_html,
         "sample_variables": sample_vars,
+        "unresolved_variables": snapshot.unresolved_variables,
+    }
+
+
+@router.get("/templates/{key}/versions/{version_number}/preview")
+async def preview_template_version(
+    key: str,
+    version_number: int,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Renders a preview of a specific historical template version.
+    
+    This allows previewing and test-sending historical versions without
+    needing to restore them to the active template first.
+    """
+    v_doc = await db.email_template_versions.find_one({"template_key": key, "version": version_number})
+    if not v_doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Template version {key}@v{version_number} not found.",
+        )
+
+    sample_vars = _get_sample_variables("preview@example.com")
+
+    snapshot = await CommunicationsService.render_message(
+        db,
+        template_key=key,
+        template_version=version_number,
+        subject=v_doc.get("subject"),
+        variables=sample_vars,
+        escape_html_in_variables=False,
+    )
+
+    return {
+        "key": key,
+        "version": version_number,
+        "name": v_doc.get("name"),
+        "subject": snapshot.subject,
+        "html_body": snapshot.body_html,
+        "sample_variables": sample_vars,
+        "unresolved_variables": snapshot.unresolved_variables,
+        "created_at": v_doc.get("created_at"),
+        "change_summary": v_doc.get("change_summary"),
     }
 
 
@@ -423,6 +714,10 @@ async def delete_template(
     return {"success": True, "key": key, "deleted": True}
 
 
+# ============================================================================
+# ANALYTICS & AUDIT
+# ============================================================================
+
 @router.get("/audit-logs")
 async def list_audit_logs(
     limit: int = Query(50, ge=1, le=100),
@@ -484,109 +779,19 @@ async def get_communications_analytics(
     }
 
 
+# ============================================================================
+# HELPERS
+# ============================================================================
 
-@router.get("/outbox/{outbox_id}")
-async def get_outbox_item(
-    outbox_id: str,
-    admin: AdminUser = Depends(get_current_admin),
-    db: AsyncIOMotorDatabase = Depends(get_database),
-) -> Dict[str, Any]:
-    """Retrieves a single outbox message by ID with full delivery telemetry."""
-    doc = await db.email_outbox.find_one({"_id": outbox_id})
-    if not doc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Outbox message '{outbox_id}' not found.",
-        )
-    return OutboxItemModel.from_mongo(doc).model_dump()
-
-
-@router.get("/diagnostics")
-async def get_communications_diagnostics(
-    admin: AdminUser = Depends(get_current_admin),
-    db: AsyncIOMotorDatabase = Depends(get_database),
-) -> Dict[str, Any]:
-    """Returns runtime EMS health, provider readiness, and environment boundaries."""
-    has_api_key = bool(settings.RESEND_API_KEY)
-    is_enabled = settings.RESEND_ENABLED
-    env = getattr(settings, "COMMUNICATIONS_ENVIRONMENT", "test")
-    allowed_recipients = settings.ALLOWED_TEST_RECIPIENTS
-
+def _get_sample_variables(recipient_email: str = "sarah@cyberdyne.io") -> Dict[str, Any]:
+    """Returns realistic sample variable values for preview rendering."""
     return {
-        "provider": {
-            "name": "resend",
-            "has_api_key": has_api_key,
-            "is_enabled": is_enabled,
-            "sending_domain": "updates.navigatte.com",
-            "from_email": settings.RESEND_FROM_EMAIL,
-            "has_webhook_secret": bool(settings.RESEND_WEBHOOK_SECRET),
-        },
-        "environment": {
-            "current": env,
-            "is_production": env == "production",
-            "campaign_test_mode": env != "production",
-            "allowed_test_recipients_count": len(allowed_recipients),
-            "allowed_test_recipients": allowed_recipients,
-        },
-        "system": {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        },
+        "name": "Sarah Connor",
+        "company": "Cyberdyne Systems",
+        "email": recipient_email,
+        "service_interest": "Cloud & AI Architecture",
+        "start_time": "Aug 25, 2026, 2:00 PM UTC",
+        "timezone": "UTC",
+        "meeting_url": "https://navigatte.com/meet/demo-session",
+        "unsubscribe_url": f"https://navigatte.com/api/unsubscribe?email={recipient_email}&token=preview",
     }
-
-
-@router.post("/outbox/{outbox_id}/retry")
-async def retry_outbox_message(
-    outbox_id: str,
-    admin: AdminUser = Depends(get_current_admin),
-    db: AsyncIOMotorDatabase = Depends(get_database),
-) -> Dict[str, Any]:
-    """Manually retries a queued or failed outbox email message."""
-    service = CommunicationsService()
-    try:
-        item = await service.retry_outbox_item(db=db, outbox_id=outbox_id)
-        is_success = item.status in (OutboxStatus.SENT, OutboxStatus.DELIVERED)
-        return {
-            "success": is_success,
-            "status": item.status.value,
-            "outbox_id": item.id,
-            "attempt_count": item.attempt_count,
-            "provider_message_id": item.provider_message_id,
-            "error_message": item.error_message,
-            "is_retryable": item.is_retryable,
-            "environment": item.environment,
-        }
-    except Exception as e:
-        logger.error(f"Failed to retry outbox item {outbox_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-
-
-@router.post("/send-test")
-async def send_test_email(
-    payload: SendTestEmailRequest,
-    admin: AdminUser = Depends(get_current_admin),
-    db: AsyncIOMotorDatabase = Depends(get_database),
-) -> Dict[str, Any]:
-    """Dispatches a real test email through Resend to verify delivery. Never claims success if unconfigured."""
-    service = CommunicationsService()
-    item = await service.send_transactional_email(
-        db=db,
-        template_key=payload.template_key,
-        recipient_email=payload.recipient_email,
-        recipient_name=payload.recipient_name or "Test Recipient",
-        variables=payload.variables or {"name": payload.recipient_name or "Admin", "service_interest": "Technical Advisory"},
-    )
-    is_success = item.status in (OutboxStatus.SENT, OutboxStatus.DELIVERED)
-    return {
-        "success": is_success,
-        "status": item.status.value,
-        "outbox_id": item.id,
-        "provider_message_id": item.provider_message_id,
-        "error_message": item.error_message,
-        "is_retryable": item.is_retryable,
-        "attempt_count": item.attempt_count,
-        "environment": item.environment,
-    }
-

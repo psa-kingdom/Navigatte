@@ -31,8 +31,9 @@ class CampaignCreateRequest(BaseModel):
     reply_to: Optional[str] = None
     subject: str
     template_key: str = "custom"
+    template_version: Optional[int] = None   # None = freeze active version at launch
     audience_id: Optional[str] = None
-    audience_source: str = "audience"  # 'newsletter' | 'manual' | 'both' | 'audience'
+    audience_source: str = "audience"  # 'manual' | 'both' | 'audience'
     manual_recipients: List[str] = []
     exclusions: List[str] = []
     custom_html: Optional[str] = None
@@ -47,6 +48,7 @@ class CampaignUpdateRequest(BaseModel):
     reply_to: Optional[str] = None
     subject: Optional[str] = None
     template_key: Optional[str] = None
+    template_version: Optional[int] = None   # None = use active version at launch
     audience_id: Optional[str] = None
     audience_source: Optional[str] = None
     manual_recipients: Optional[List[str]] = None
@@ -335,3 +337,208 @@ async def cancel_campaign(
             detail="Campaign cannot be cancelled in its current state.",
         )
     return {"success": True, "status": "cancelled"}
+
+
+@router.post("/{campaign_id}/render-preview")
+async def render_campaign_preview(
+    campaign_id: str,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Renders the canonical preview of a campaign — exact same content that will be dispatched.
+    
+    Uses the same render_message() pipeline as campaign launch and test-send.
+    The preview subject and body_html returned here ARE the outbox snapshot.
+    There is no gap between what you see and what gets sent.
+    """
+    doc = await db.campaigns.find_one({"_id": campaign_id})
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found.")
+    campaign = CampaignModel.from_mongo(doc)
+
+    from services.communications_service import CommunicationsService
+
+    sample_vars = {
+        "name": "Sarah Connor",
+        "company": "Cyberdyne Systems",
+        "email": "sarah@cyberdyne.io",
+        "service_interest": "Cloud & AI Architecture",
+        "start_time": "Aug 25, 2026, 2:00 PM UTC",
+        "timezone": "UTC",
+        "meeting_url": "https://navigatte.com/meet/demo",
+        "unsubscribe_url": "https://navigatte.com/api/unsubscribe?email=sarah@cyberdyne.io&token=preview",
+    }
+
+    has_custom_html = bool(getattr(campaign, "custom_html", None))
+
+    snapshot = await CommunicationsService.render_message(
+        db,
+        template_key=campaign.template_key if not has_custom_html and campaign.template_key != "custom" else None,
+        template_version=getattr(campaign, "template_version", None),
+        custom_html=getattr(campaign, "custom_html", None) if has_custom_html else None,
+        subject=campaign.subject,
+        variables=sample_vars,
+        escape_html_in_variables=False,  # Sample vars are safe
+    )
+
+    return {
+        "campaign_id": campaign_id,
+        "subject": snapshot.subject,
+        "html_body": snapshot.body_html,
+        "template_key": snapshot.template_key,
+        "template_version": snapshot.template_version,
+        "sample_variables": sample_vars,
+        "unresolved_variables": snapshot.unresolved_variables,
+        "content_match_note": (
+            "This preview is rendered by the exact same pipeline used at campaign launch. "
+            "What you see here is what recipients will receive."
+        ),
+    }
+
+
+@router.post("/{campaign_id}/send-test-campaign")
+async def send_campaign_test(
+    campaign_id: str,
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Dispatches a test send of this campaign to its configured test_recipients ONLY.
+    
+    SERVER-ENFORCED SAFETY BOUNDARY:
+    This endpoint NEVER uses audience contacts. Only the campaign's test_recipients
+    list is used as dispatch targets. This is enforced at the server level, not just UI.
+    
+    Content used is exactly the campaign's current custom_html or template — the same
+    content that will be used in production launch. No silent re-fetching.
+    """
+    doc = await db.campaigns.find_one({"_id": campaign_id})
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found.")
+    campaign = CampaignModel.from_mongo(doc)
+
+    test_recipients = [e.lower().strip() for e in (campaign.test_recipients or []) if e.strip()]
+    if not test_recipients:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "No test_recipients configured on this campaign. "
+                "Add at least one test recipient before sending a test."
+            ),
+        )
+
+    if not campaign.subject or not campaign.subject.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Campaign subject is required before sending a test.",
+        )
+
+    from services.communications_service import CommunicationsService
+    from integrations.resend.provider import ResendCommunicationsProvider
+    from integrations.contracts.communications import EmailMessage, EmailRecipient
+    from models.communications import OutboxItemModel, OutboxStatus
+    from datetime import timezone
+
+    provider = ResendCommunicationsProvider()
+    if not provider.is_enabled():
+        return {
+            "success": False,
+            "status": "provider_disabled",
+            "error_message": "RESEND_API_KEY is not configured. Cannot dispatch test.",
+            "test_recipients": test_recipients,
+        }
+
+    has_custom_html = bool(getattr(campaign, "custom_html", None))
+    now = datetime.now(timezone.utc)
+    results = []
+
+    for recipient_email in test_recipients:
+        sample_vars = {
+            "name": "Test Recipient",
+            "company": "Test Organization",
+            "email": recipient_email,
+            "service_interest": "Platform Testing",
+            "unsubscribe_url": CommunicationsService.build_unsubscribe_url(recipient_email),
+        }
+
+        try:
+            snapshot = await CommunicationsService.render_message(
+                db,
+                template_key=campaign.template_key if not has_custom_html and campaign.template_key != "custom" else None,
+                template_version=getattr(campaign, "template_version", None),
+                custom_html=getattr(campaign, "custom_html", None) if has_custom_html else None,
+                subject=campaign.subject,
+                variables=sample_vars,
+            )
+
+            idem_key = f"campaign-test:{campaign.id}:{recipient_email}:{int(now.timestamp())}"
+            msg = EmailMessage(
+                to=[EmailRecipient(email=recipient_email, name="Test Recipient")],
+                subject=snapshot.subject,
+                html_body=snapshot.body_html,
+                text_body=snapshot.body_text,
+                from_email=snapshot.from_email,
+                idempotency_key=idem_key,
+                tags={
+                    "template_key": snapshot.template_key or "custom",
+                    "send_type": "campaign_test",
+                    "campaign_id": campaign.id,
+                },
+            )
+
+            result = await provider.send_email(msg)
+
+            # Record in outbox for audit trail
+            outbox_item = OutboxItemModel(
+                idempotency_key=idem_key,
+                template_key=snapshot.template_key,
+                recipient_email=recipient_email,
+                recipient_name="Test Recipient",
+                subject=snapshot.subject,
+                body_html=snapshot.body_html,
+                body_text=snapshot.body_text,
+                from_email=snapshot.from_email,
+                status=OutboxStatus.SENT if result.status == "sent" else OutboxStatus.FAILED,
+                provider="resend",
+                provider_message_id=result.message_id if result.status == "sent" else None,
+                environment="test",
+                attempt_count=1,
+                sent_at=now if result.status == "sent" else None,
+                error_message=result.error if result.status != "sent" else None,
+                metadata={
+                    "send_type": "campaign_test",
+                    "campaign_id": campaign.id,
+                    "sent_by": admin.email,
+                    "template_version": snapshot.template_version,
+                },
+            )
+            try:
+                await db.email_outbox.insert_one(outbox_item.to_mongo())
+            except Exception:
+                pass
+
+            results.append({
+                "email": recipient_email,
+                "status": result.status,
+                "message_id": result.message_id,
+                "error": result.error if result.status != "sent" else None,
+            })
+
+        except Exception as e:
+            logger.error(f"Failed campaign test send to {recipient_email}: {e}")
+            results.append({
+                "email": recipient_email,
+                "status": "error",
+                "error": str(e),
+            })
+
+    sent_count = sum(1 for r in results if r["status"] == "sent")
+    return {
+        "success": sent_count > 0,
+        "campaign_id": campaign_id,
+        "campaign_name": campaign.name,
+        "test_recipients_count": len(test_recipients),
+        "sent_count": sent_count,
+        "failed_count": len(test_recipients) - sent_count,
+        "results": results,
+        "note": "Test was dispatched to test_recipients only. Audience contacts were NOT used.",
+    }

@@ -75,3 +75,58 @@ async def init_db_indexes():
         logger.info("Database indexes initialized successfully.")
     except Exception as e:
         logger.warning(f"Index initialization warning: {e}")
+
+
+async def ensure_communications_indexes(db: AsyncIOMotorDatabase):
+    """Creates required indexes for all EMS/Communications collections.
+    
+    These were identified as missing in the forensic audit. Without these,
+    queue polling degrades as the outbox grows, and idempotency enforcement
+    relies on application-level checks only.
+    """
+    try:
+        from pymongo import ASCENDING, DESCENDING
+
+        # Outbox: idempotency deduplication (prevents duplicate sends)
+        await db.email_outbox.create_index("idempotency_key", unique=True, background=True)
+
+        # Outbox: delivery worker queue polling (status + next_attempt_at compound)
+        await db.email_outbox.create_index(
+            [("status", ASCENDING), ("next_attempt_at", ASCENDING)],
+            background=True,
+        )
+
+        # Outbox: webhook matching by provider message ID
+        await db.email_outbox.create_index("provider_message_id", background=True, sparse=True)
+
+        # Outbox: created_at sort for list views
+        await db.email_outbox.create_index([("created_at", DESCENDING)], background=True)
+
+        # Suppressions: unique email (idempotent upserts)
+        await db.email_suppressions.create_index("email", unique=True, background=True)
+
+        # Audience contacts: compound unique (prevents duplicate imports)
+        await db.audience_contacts.create_index(
+            [("audience_id", ASCENDING), ("email", ASCENDING)],
+            unique=True,
+            background=True,
+        )
+
+        # Campaigns: sort by created_at for list views
+        await db.campaigns.create_index([("created_at", DESCENDING)], background=True)
+
+        # Campaigns: status filter
+        await db.campaigns.create_index("status", background=True)
+
+        # Templates: key lookup (already unique by app logic, but index helps)
+        await db.email_templates.create_index("key", unique=True, background=True)
+
+        # Template versions: lookup by key + version
+        await db.email_template_versions.create_index(
+            [("template_key", ASCENDING), ("version", DESCENDING)],
+            background=True,
+        )
+
+        logger.info("[EMS] Communications collection indexes ensured.")
+    except Exception as e:
+        logger.warning(f"[EMS] Communications index initialization warning: {e}")

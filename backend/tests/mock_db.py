@@ -165,7 +165,7 @@ class MockCollection:
         self.docs.append(d)
         return MockInsertResult(d["_id"])
 
-    async def insert_many(self, docs):
+    async def insert_many(self, docs, ordered=True):
         for doc in docs:
             await self.insert_one(doc)
         return True
@@ -186,6 +186,8 @@ class MockCollection:
 
         if upsert:
             new_doc = dict(query)
+            if "$setOnInsert" in update:
+                new_doc.update(update["$setOnInsert"])
             if "$set" in update:
                 new_doc.update(update["$set"])
             await self.insert_one(new_doc)

@@ -65,6 +65,7 @@ def test_send_test_email_unconfigured_provider_returns_truthful_status(client, a
         "recipient_email": "client@enterprise.com",
         "recipient_name": "Enterprise Client",
         "template_key": "enquiry_acknowledgement",
+        "subject": "Navigatte Enquiry Acknowledgement",
         "variables": {"name": "Enterprise Client", "service_interest": "Cloud Modernization"},
     }
     send_resp = client.post("/api/admin/communications/send-test", headers=auth_headers, json=payload)
@@ -73,13 +74,10 @@ def test_send_test_email_unconfigured_provider_returns_truthful_status(client, a
     assert send_data["success"] is False
     assert send_data["status"] == "provider_disabled"
     assert "RESEND_API_KEY" in send_data["error_message"]
-
-    # Check outbox listing
-    outbox_resp = client.get("/api/admin/communications/outbox", headers=auth_headers)
-    assert outbox_resp.status_code == 200
-    outbox_data = outbox_resp.json()
-    assert outbox_data["total"] >= 1
-    assert any(item["recipient_email"] == "client@enterprise.com" for item in outbox_data["items"])
+    # New behavior: provider_disabled returns a preview of what would have been sent
+    # rather than creating an outbox record (no ghost items for unconfigured provider)
+    assert "preview" in send_data
+    assert "subject" in send_data["preview"]
 
 
 def test_send_test_email_with_configured_provider(client, auth_headers, monkeypatch):
@@ -103,6 +101,7 @@ def test_send_test_email_with_configured_provider(client, auth_headers, monkeypa
         "recipient_email": "real.prospect@fortune500.com",
         "recipient_name": "VP Technology",
         "template_key": "enquiry_acknowledgement",
+        "subject": "Navigatte Technical Advisory",
         "variables": {"name": "VP Technology", "service_interest": "Technical Advisory"},
     }
     send_resp = client.post("/api/admin/communications/send-test", headers=auth_headers, json=payload)
