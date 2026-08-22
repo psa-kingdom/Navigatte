@@ -43,6 +43,12 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import api from "@/lib/api";
 import { CampaignStudio } from "./CampaignStudio";
+import {
+  formatLocalDateTime,
+  formatLocalDate,
+  formatRelativeTime,
+  getFullTimezoneTooltip,
+} from "@/lib/dateUtils";
 
 const STATUS_BADGES = {
   sent: "bg-blue-500/15 text-blue-400 border-blue-500/25",
@@ -408,10 +414,8 @@ export const CommunicationsCentre = () => {
                   <div>
                     <h4 className="text-sm font-medium text-cloud">{tpl.name}</h4>
                     <div className="flex items-center gap-2 mt-0.5">
-                      <p className="text-[11px] font-mono text-iris">{tpl.key}</p>
-                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/5 text-fog border border-white/10">
-                        v{tpl.version || 1}
-                      </span>
+                      <span className="text-xs font-mono text-iris">{tpl.key}</span>
+                      <span className="text-[10px] font-mono text-fog">v{tpl.version || 1}</span>
                     </div>
                   </div>
                   <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">
@@ -419,7 +423,9 @@ export const CommunicationsCentre = () => {
                   </span>
                 </div>
 
-                <p className="text-xs text-fog"><strong className="text-cloud">Subject:</strong> {tpl.subject}</p>
+                <div className="text-xs text-ash space-y-1">
+                  <p><span className="text-fog">Subject:</span> {tpl.subject}</p>
+                </div>
 
                 <div className="pt-2 border-t border-white/5 flex items-center justify-between">
                   <button
@@ -434,9 +440,11 @@ export const CommunicationsCentre = () => {
                     }}
                     className="text-iris hover:underline text-xs"
                   >
-                    Compose with Template
+                    Compose with Template →
                   </button>
-                  <button
+                  <Button
+                    size="sm"
+                    variant="outline"
                     onClick={async () => {
                       try {
                         const resp = await api.get(`/admin/communications/templates/${tpl.key}/versions`);
@@ -445,10 +453,11 @@ export const CommunicationsCentre = () => {
                         toast({ variant: "destructive", title: "Error", description: "Failed to load versions" });
                       }
                     }}
-                    className="text-fog hover:text-cloud text-xs flex items-center gap-1"
+                    className="border-white/10 text-fog hover:text-cloud text-xs h-7 px-2"
                   >
-                    <History className="w-3.5 h-3.5" /> Version History
-                  </button>
+                    <History className="w-3.5 h-3.5 mr-1" />
+                    History
+                  </Button>
                 </div>
               </div>
             ))}
@@ -457,66 +466,46 @@ export const CommunicationsCentre = () => {
       )}
 
       {/* ========================================================================= */}
-      {/* TAB 4: AUDIENCES & SUPPRESSION */}
+      {/* TAB 4: AUDIENCES & SUPPRESSIONS */}
       {/* ========================================================================= */}
       {activeTab === "audiences" && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Audience Lists */}
-          <div className="space-y-3">
+        <div className="space-y-6">
+          <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-xs font-mono uppercase tracking-wider text-fog">Audience Lists</h3>
+              <h3 className="text-xs font-mono uppercase tracking-wider text-fog">Saved Audiences ({audiences.length})</h3>
             </div>
-            <div className="bg-obsidian border border-white/10 rounded-xl divide-y divide-white/5">
-              {audiences.length === 0 ? (
-                <div className="p-6 text-center text-fog text-xs">No audience groups defined.</div>
-              ) : (
-                audiences.map((aud) => (
-                  <div key={aud.id} className="p-4 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <h4 className="text-sm font-medium text-cloud">{aud.name}</h4>
-                      <span className="text-xs font-mono text-iris font-semibold">{aud.member_count} contacts</span>
-                    </div>
-                    <p className="text-xs text-fog">{aud.description || "No description."}</p>
-                    <div className="pt-1 flex items-center gap-2">
-                      <Button
-                        onClick={() => {
-                          setImportModal(aud);
-                          setImportMode("file");
-                          setSelectedFile(null);
-                          setCsvImportText("");
-                          setCsvImportResult(null);
-                        }}
-                        size="sm"
-                        variant="outline"
-                        className="border-white/10 text-cloud hover:bg-white/5 text-[11px] h-7"
-                      >
-                        <Upload className="w-3 h-3 mr-1" /> Import CSV / XLSX
-                      </Button>
-                    </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {audiences.map((aud) => (
+                <div key={aud.id} className="bg-obsidian border border-white/10 rounded-xl p-5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-medium text-cloud">{aud.name}</h4>
+                    <span className="text-xs font-mono text-iris font-semibold">{aud.member_count || 0} contacts</span>
                   </div>
-                ))
-              )}
+                  {aud.description && <p className="text-xs text-ash">{aud.description}</p>}
+                </div>
+              ))}
             </div>
           </div>
 
-          {/* Global Suppression List */}
-          <div className="space-y-3">
+          <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-xs font-mono uppercase tracking-wider text-fog">Global Suppression List ({suppressions.length})</h3>
+              <div className="flex items-center gap-2">
+                <Ban className="w-4 h-4 text-rose-400" />
+                <h3 className="text-xs font-mono uppercase tracking-wider text-fog">Global Suppression List ({suppressions.length})</h3>
+              </div>
             </div>
-            <div className="bg-obsidian border border-white/10 rounded-xl divide-y divide-white/5 max-h-[400px] overflow-y-auto">
+            <div className="bg-obsidian border border-white/10 rounded-xl overflow-hidden divide-y divide-white/5">
               {suppressions.length === 0 ? (
-                <div className="p-6 text-center text-fog text-xs">Suppression list is empty.</div>
+                <div className="p-6 text-center text-fog text-xs">No suppressed emails found.</div>
               ) : (
-                suppressions.map((sup) => (
+                suppressions.slice(0, 10).map((sup) => (
                   <div key={sup.id} className="p-3 flex items-center justify-between text-xs">
-                    <div>
-                      <p className="font-mono text-cloud">{sup.email}</p>
-                      <p className="text-[10px] text-fog">{sup.source || "system"}</p>
+                    <span className="font-mono text-cloud">{sup.email}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono uppercase bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                        {sup.reason}
+                      </span>
                     </div>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-mono uppercase border bg-amber-500/15 text-amber-400 border-amber-500/25">
-                      {sup.reason}
-                    </span>
                   </div>
                 ))
               )}
@@ -526,66 +515,78 @@ export const CommunicationsCentre = () => {
       )}
 
       {/* ========================================================================= */}
-      {/* TAB 5: TRANSACTIONAL OUTBOX */}
+      {/* TAB 5: TRANSACTIONAL OUTBOX & AUDIT */}
       {/* ========================================================================= */}
       {activeTab === "outbox" && (
         <div className="space-y-4">
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-obsidian border border-white/10 p-3 rounded-xl">
-            <div className="relative w-full sm:w-72">
-              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-fog" />
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="relative flex-1 max-w-sm">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-fog" />
               <Input
-                placeholder="Search recipient or subject..."
-                value={outboxSearchQuery}
-                onChange={(e) => setOutboxSearchQuery(e.target.value)}
-                className="pl-9 h-8 text-xs bg-white/5 border-white/10 text-cloud rounded-lg"
+                placeholder="Search recipient or subject…"
+                value={outboxSearch}
+                onChange={(e) => setOutboxSearch(e.target.value)}
+                className="pl-9 bg-obsidian border-white/10 text-xs h-9"
               />
             </div>
-
-            <select
-              value={outboxStatusFilter}
-              onChange={(e) => setOutboxStatusFilter(e.target.value)}
-              className="h-8 text-xs bg-white/5 border border-white/10 text-cloud rounded-lg px-2.5 outline-none"
-            >
-              <option value="" className="bg-[#101018]">All Statuses</option>
-              <option value="sent" className="bg-[#101018]">Sent</option>
-              <option value="delivered" className="bg-[#101018]">Delivered</option>
-              <option value="opened" className="bg-[#101018]">Opened</option>
-              <option value="bounced" className="bg-[#101018]">Bounced</option>
-              <option value="failed" className="bg-[#101018]">Failed</option>
-              <option value="provider_disabled" className="bg-[#101018]">Provider Disabled</option>
-            </select>
+            <div className="flex items-center gap-2">
+              <select
+                value={outboxFilter}
+                onChange={(e) => setOutboxFilter(e.target.value)}
+                className="bg-obsidian border border-white/10 text-xs rounded-lg px-2.5 py-1.5 text-ash"
+              >
+                <option value="all">All Statuses</option>
+                <option value="sent">Sent</option>
+                <option value="delivered">Delivered</option>
+                <option value="queued">Queued</option>
+                <option value="sending">Sending</option>
+                <option value="failed">Failed</option>
+                <option value="bounced">Bounced</option>
+              </select>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={fetchOutbox}
+                disabled={loadingOutbox}
+                className="border-white/10 text-fog hover:text-cloud text-xs h-9"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${loadingOutbox ? "animate-spin" : ""}`} />
+              </Button>
+            </div>
           </div>
 
-          <div className="bg-obsidian border border-white/10 rounded-xl overflow-hidden shadow-md">
-            {outboxItems.length === 0 ? (
-              <div className="p-12 text-center text-fog text-xs">No matching emails found in outbox.</div>
+          <div className="bg-obsidian border border-white/10 rounded-xl overflow-hidden">
+            {loadingOutbox ? (
+              <div className="p-8 flex items-center justify-center text-fog text-xs">
+                <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                Loading outbox messages…
+              </div>
+            ) : outboxItems.length === 0 ? (
+              <div className="p-8 text-center text-fog text-xs">No matching outbox messages found.</div>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs">
-                  <thead className="border-b border-white/10 text-fog font-mono uppercase text-[11px] bg-white/[0.02]">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-white/5 text-fog font-mono text-[11px] uppercase">
                     <tr>
                       <th className="p-3">Status</th>
                       <th className="p-3">Recipient</th>
                       <th className="p-3">Subject</th>
                       <th className="p-3">Template</th>
-                      <th className="p-3">Environment</th>
-                      <th className="p-3">Dispatched</th>
-                      <th className="p-3 text-right">Action</th>
+                      <th className="p-3">Env</th>
+                      <th className="p-3">Sent / Created</th>
+                      <th className="p-3 text-right">Actions</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-white/5 text-ash">
+                  <tbody className="divide-y divide-white/5">
                     {outboxItems
-                      .filter((item) => !outboxStatusFilter || item.status === outboxStatusFilter)
-                      .filter(
-                        (item) =>
-                          !outboxSearchQuery ||
-                          item.recipient_email?.toLowerCase().includes(outboxSearchQuery.toLowerCase()) ||
-                          item.subject?.toLowerCase().includes(outboxSearchQuery.toLowerCase())
-                      )
+                      .filter((item) => {
+                        if (outboxFilter === "all") return true;
+                        return item.status === outboxFilter;
+                      })
                       .map((item) => (
-                        <tr key={item.id} className="hover:bg-white/[0.02] transition-colors">
+                        <tr key={item.id} className="hover:bg-white/[0.02]">
                           <td className="p-3">
-                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono uppercase border ${STATUS_BADGES[item.status] || STATUS_BADGES.queued}`}>
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono uppercase border ${STATUS_BADGES[item.status] || "bg-white/5 text-fog border-white/10"}`}>
                               {item.status}
                             </span>
                           </td>
@@ -597,8 +598,8 @@ export const CommunicationsCentre = () => {
                               {item.environment || "test"}
                             </span>
                           </td>
-                          <td className="p-3 font-mono text-fog text-[11px]">
-                            {item.created_at ? new Date(item.created_at).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : "—"}
+                          <td className="p-3 font-mono text-fog text-[11px]" title={getFullTimezoneTooltip(item.sent_at || item.created_at)}>
+                            {formatRelativeTime(item.sent_at || item.created_at)}
                           </td>
                           <td className="p-3 text-right">
                             <button
@@ -654,8 +655,8 @@ export const CommunicationsCentre = () => {
                       <p className="font-mono text-cloud font-medium">{log.action}</p>
                       <p className="text-fog text-[11px]">Actor: {log.actor_email} • Target: {log.target_type} ({log.target_id})</p>
                     </div>
-                    <span className="text-[11px] font-mono text-fog">
-                      {log.created_at ? new Date(log.created_at).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : ""}
+                    <span className="text-[11px] font-mono text-fog" title={getFullTimezoneTooltip(log.created_at)}>
+                      {formatLocalDateTime(log.created_at)}
                     </span>
                   </div>
                 ))
@@ -779,15 +780,15 @@ export const CommunicationsCentre = () => {
               <button onClick={() => setSelectedOutbox(null)} className="text-fog hover:text-cloud text-xs">✕</button>
             </div>
 
-            <div className="space-y-2 text-xs text-ash">
+            <div className="space-y-2.5 text-xs text-ash">
               <div className="flex items-center justify-between">
                 <span className="text-fog">Recipient:</span>
                 <span className="font-mono text-cloud">{selectedOutbox.recipient_email}</span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-fog">Status:</span>
-                <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono uppercase border ${STATUS_BADGES[selectedOutbox.status]}`}>
-                  {selectedOutbox.status}
+                <span className="text-fog">Delivery Status:</span>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono uppercase border ${STATUS_BADGES[selectedOutbox.status] || "bg-white/5 text-fog border-white/10"}`}>
+                  {selectedOutbox.status === "sent" ? "Accepted / Sent" : selectedOutbox.status}
                 </span>
               </div>
               {selectedOutbox.provider_message_id && (
@@ -796,6 +797,42 @@ export const CommunicationsCentre = () => {
                   <span className="font-mono text-[11px] text-iris">{selectedOutbox.provider_message_id}</span>
                 </div>
               )}
+
+              {/* Chronological Lifecycle Timeline */}
+              <div className="mt-3 pt-3 border-t border-white/10 space-y-2">
+                <span className="text-[11px] font-mono uppercase tracking-wider text-fog block mb-1">
+                  Delivery Lifecycle Timeline
+                </span>
+                <div className="bg-white/5 rounded-xl p-3 space-y-2 text-[11px] font-mono">
+                  <div className="flex items-center justify-between">
+                    <span className="text-fog">1. Queued / Created:</span>
+                    <span className="text-cloud">{formatLocalDateTime(selectedOutbox.created_at)}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-fog">2. Attempts:</span>
+                    <span className="text-cloud">Attempt #{selectedOutbox.attempt_count || 1} of {selectedOutbox.max_attempts || 3}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-fog">3. Accepted by Resend:</span>
+                    <span className={selectedOutbox.sent_at ? "text-emerald-400 font-semibold" : selectedOutbox.error_message ? "text-rose-400" : "text-fog"}>
+                      {selectedOutbox.sent_at ? formatLocalDateTime(selectedOutbox.sent_at) : (selectedOutbox.error_message ? "Failed" : "Pending")}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-fog">4. Inbox Delivered:</span>
+                    <span className={selectedOutbox.delivered_at ? "text-emerald-400 font-semibold" : selectedOutbox.bounced_at ? "text-rose-400" : "text-fog"}>
+                      {selectedOutbox.delivered_at ? formatLocalDateTime(selectedOutbox.delivered_at) : (selectedOutbox.bounced_at ? `Bounced (${formatLocalDateTime(selectedOutbox.bounced_at)})` : "Awaiting Webhook Confirmation")}
+                    </span>
+                  </div>
+                  {selectedOutbox.opened_at && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-fog">5. Opened by Recipient:</span>
+                      <span className="text-iris font-semibold">{formatLocalDateTime(selectedOutbox.opened_at)}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               {selectedOutbox.error_message && (
                 <div className="p-2.5 bg-rose-500/10 border border-rose-500/20 rounded text-rose-300 font-mono text-[11px]">
                   <p className="font-semibold text-[10px] uppercase text-rose-400">Failure Reason:</p>

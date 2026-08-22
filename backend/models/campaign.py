@@ -26,8 +26,8 @@ class CampaignModel(BaseModel):
     environment: str = "test"  # 'test' | 'production'
     sender_email: str = "Navigatte <updates@updates.navigatte.com>"
     reply_to: Optional[str] = None
-    subject: str
-    template_key: str
+    subject: str = "Navigatte Advisory"
+    template_key: Optional[str] = "custom"
     template_version: int = 1
     audience_id: Optional[str] = None
     audience_source: str = "audience"  # 'newsletter' | 'manual' | 'both' | 'audience'
@@ -97,6 +97,8 @@ class CampaignModel(BaseModel):
     def from_mongo(cls, data: Dict[str, Any]) -> "CampaignModel":
         if not data:
             return None
-        doc = dict(data)
+        from core.datetime_utils import normalize_doc_datetimes
+        doc = normalize_doc_datetimes(dict(data))
         doc["id"] = str(doc.pop("_id", data.get("id")))
         return cls(**doc)
+

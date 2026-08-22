@@ -509,11 +509,20 @@ class CommunicationsService:
         outbox_item = OutboxItemModel.from_mongo(doc)
         now = datetime.now(timezone.utc)
 
-        # Guard: Cannot retry already delivered message
-        if outbox_item.status == OutboxStatus.DELIVERED:
-            raise ValueError(f"Outbox item {outbox_id} is already delivered and cannot be re-sent.")
+        # Guard 1: Cannot retry already delivered or opened/clicked messages
+        if outbox_item.status in (OutboxStatus.DELIVERED, OutboxStatus.OPENED, OutboxStatus.CLICKED):
+            raise ValueError(f"Outbox item {outbox_id} is already delivered (state '{outbox_item.status.value}') and cannot be re-sent.")
 
-        # Guard: Check attempt limit
+        # Guard 2: If item is currently SENDING (locked by active worker), check lock
+        if outbox_item.status == OutboxStatus.SENDING:
+            lock_exp = doc.get("lock_expires_at")
+            if lock_exp:
+                from core.datetime_utils import ensure_utc
+                lock_exp_utc = ensure_utc(lock_exp)
+                if lock_exp_utc > now:
+                    raise ValueError(f"Outbox item {outbox_id} is currently being dispatched by the delivery worker. Please wait.")
+
+        # Guard 3: Check attempt limit
         if outbox_item.attempt_count >= outbox_item.max_attempts:
             raise ValueError(
                 f"Outbox item {outbox_id} has reached maximum retry attempts ({outbox_item.max_attempts})."

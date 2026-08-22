@@ -33,6 +33,8 @@ class CommunicationsAuditLogModel(BaseModel):
     def from_mongo(cls, data: Dict[str, Any]) -> "CommunicationsAuditLogModel":
         if not data:
             return None
-        doc = dict(data)
+        from core.datetime_utils import normalize_doc_datetimes
+        doc = normalize_doc_datetimes(dict(data))
         doc["id"] = str(doc.pop("_id", data.get("id")))
         return cls(**doc)
+
