@@ -1,15 +1,17 @@
 /**
- * CampaignStudio — One-Screen Email Campaign Composer
+ * CampaignStudio — One-Screen Email Campaign Studio
  *
  * This component is the primary creative and operational studio for all email campaigns:
  *
  * Core Workflow:
- *   1. Compose (Template or Custom HTML with Live Variables Toolbar)
- *   2. Real-time Live Preview (Sandboxed iframe, instant variable interpolation)
- *   3. Recipients (Audience Only, Manual Only with Direct CSV/XLSX Import, or Both)
- *   4. Safety Environment Toggle (TEST Mode vs PRODUCTION Mode)
- *   5. Test Send (One-click real Resend dispatch to test recipients with instant feedback)
- *   6. Review & Launch (Exact recipient breakdown + safety count-confirmation modal)
+ *   1. Identity & Send Mode (TEST Sandbox vs PRODUCTION Broadcast)
+ *   2. Compose Content (Template or Custom HTML with Live Variables Toolbar)
+ *   3. Real-Time Sandboxed Preview (Sandboxed iframe, instant variable interpolation)
+ *   4. Target Recipients (Audience Only, Manual Only with Direct CSV/XLSX Import, or Both)
+ *   5. Automatic Real-Time Recipient Breakdown & Safety Audit
+ *   6. Test Dispatch (One-click real Resend delivery with instant inline confirmation)
+ *   7. Production Safety Gate (Pre-flight audit + exact numeric confirmation modal)
+ *   8. Queue & Background Dispatch
  *
  * Architectural Invariant:
  *   Preview Shown == Test Sent == Outbox Snapshot == Delivered Broadcast
@@ -43,6 +45,7 @@ import {
   FileSpreadsheet,
   AlertCircle,
   HelpCircle,
+  ArrowRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -51,7 +54,7 @@ import api from "@/lib/api";
 import { RecipientChips } from "./RecipientChips";
 import { ProductionSafetyModal } from "./ProductionSafetyModal";
 
-// Variable toolbar tokens with human explanations
+// Variable toolbar tokens with human descriptions
 const PLACEHOLDERS = [
   { label: "{{name}}", desc: "Recipient full name" },
   { label: "{{company}}", desc: "Company / organization" },
@@ -87,7 +90,7 @@ const DEFAULT_HTML = `<div style="font-family: Arial, sans-serif; max-width: 600
 </div>`;
 
 /**
- * Replaces placeholders with realistic preview data
+ * Renders live preview with sample variables
  */
 function buildPreviewHtml(html) {
   let rendered = html || "";
@@ -98,7 +101,7 @@ function buildPreviewHtml(html) {
 }
 
 /**
- * Detects any {{ var }} placeholders remaining in content
+ * Detects any unresolved {{ var }} placeholders
  */
 function detectUnresolvedVars(html) {
   const matches = (html || "").match(/\{\{\s*\w+\s*\}\}/g) || [];
@@ -106,34 +109,37 @@ function detectUnresolvedVars(html) {
 }
 
 /**
- * Client-side parser for CSV/text lines with email extraction
+ * Smart Multi-column / Multiline Email Parser
+ * Searches all columns, cells, and tokens for valid email addresses.
  */
-function parseCsvContent(text) {
-  const lines = text.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean);
-  const validEmails = [];
-  let invalidCount = 0;
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function parseSmartEmailContent(rawText) {
+  if (!rawText || !rawText.trim()) {
+    return { totalRows: 0, validEmails: [], validCount: 0, duplicateCount: 0, invalidCount: 0 };
+  }
+
+  const lines = rawText.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean);
+  const emailRegex = /[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+/g;
+  const foundEmails = [];
+  let invalidRows = 0;
 
   lines.forEach((line) => {
-    // Check if comma/tab separated
-    const parts = line.split(/[,\t;]/).map((p) => p.replace(/["']/g, "").trim());
-    const foundEmail = parts.find((p) => emailRegex.test(p));
-    if (foundEmail) {
-      validEmails.push(foundEmail.toLowerCase());
+    const matches = line.match(emailRegex);
+    if (matches && matches.length > 0) {
+      matches.forEach((m) => foundEmails.push(m.toLowerCase().trim()));
     } else {
-      invalidCount++;
+      invalidRows++;
     }
   });
 
-  const uniqueEmails = [...new Set(validEmails)];
-  const duplicateCount = validEmails.length - uniqueEmails.length;
+  const uniqueEmails = [...new Set(foundEmails)];
+  const duplicateCount = foundEmails.length - uniqueEmails.length;
 
   return {
     totalRows: lines.length,
     validEmails: uniqueEmails,
     validCount: uniqueEmails.length,
     duplicateCount,
-    invalidCount,
+    invalidCount: invalidRows,
   };
 }
 
@@ -152,11 +158,11 @@ export const CampaignStudio = ({
   const autosaveTimerRef = useRef(null);
   const localSaveTimerRef = useRef(null);
 
-  // ── Campaign Identity & Environment ───────────────────────────────────────
+  // ── Campaign Identity & Send Mode ─────────────────────────────────────────
   const [campId, setCampId] = useState(initialCampaign?.id || null);
   const [campTitle, setCampTitle] = useState(initialCampaign?.name || "");
   const [campaignEnv, setCampaignEnv] = useState(initialCampaign?.environment || "test"); // 'test' | 'production'
-  const [autosaveStatus, setAutosaveStatus] = useState("idle"); // idle | saving | saved | error
+  const [autosaveStatus, setAutosaveStatus] = useState("idle");
 
   // ── Email Content ────────────────────────────────────────────────────────
   const [selectedTemplateKey, setSelectedTemplateKey] = useState(initialCampaign?.template_key || "custom");
@@ -164,10 +170,10 @@ export const CampaignStudio = ({
   const [emailHtml, setEmailHtml] = useState(initialCampaign?.custom_html || DEFAULT_HTML);
   const [hasCustomEdits, setHasCustomEdits] = useState(false);
 
-  // ── Preview State ────────────────────────────────────────────────────────
+  // ── Preview Viewport ─────────────────────────────────────────────────────
   const [previewViewport, setPreviewViewport] = useState("desktop");
 
-  // ── Recipients ───────────────────────────────────────────────────────────
+  // ── Target Recipients ────────────────────────────────────────────────────
   const [audienceSource, setAudienceSource] = useState(
     initialCampaign?.audience_source || "manual"
   );
@@ -181,14 +187,16 @@ export const CampaignStudio = ({
     initialCampaign?.exclusions || ["@navigatte.com"]
   );
   const [exclusionInput, setExclusionInput] = useState("");
-  const [recipientBreakdown, setRecipientBreakdown] = useState(null);
-  const [loadingBreakdown, setLoadingBreakdown] = useState(false);
 
-  // ── Manual Import Modal ──────────────────────────────────────────────────
+  // ── Automatic Recipient Breakdown ────────────────────────────────────────
+  const [recipientBreakdown, setRecipientBreakdown] = useState(null);
+  const [isCalculatingBreakdown, setIsCalculatingBreakdown] = useState(false);
+
+  // ── Direct Manual Import Modal ───────────────────────────────────────────
   const [manualImportModalOpen, setManualImportModalOpen] = useState(false);
   const [manualImportSummary, setManualImportSummary] = useState(null);
   const [manualImportPastedText, setManualImportPastedText] = useState("");
-  const [importTab, setImportTab] = useState("file"); // 'file' | 'paste'
+  const [importTab, setImportTab] = useState("file");
 
   // ── Test Section ─────────────────────────────────────────────────────────
   const [testRecipients, setTestRecipients] = useState(
@@ -211,7 +219,7 @@ export const CampaignStudio = ({
   const previewSubject = buildPreviewHtml(emailSubject);
   const unresolvedVars = detectUnresolvedVars(previewHtml);
 
-  // Sync when initialCampaign changes (e.g. "Load into Composer" clicked)
+  // Sync when initialCampaign is provided/loaded
   useEffect(() => {
     if (initialCampaign) {
       setCampId(initialCampaign.id || null);
@@ -227,6 +235,70 @@ export const CampaignStudio = ({
       if (initialCampaign.audience_source) setAudienceSource(initialCampaign.audience_source);
     }
   }, [initialCampaign]);
+
+  // ── Automatic Recipient Calculation (Real-Time Reactive) ─────────────────
+  useEffect(() => {
+    let isCurrent = true;
+    setIsCalculatingBreakdown(true);
+
+    const timer = setTimeout(async () => {
+      // 1. Calculate client-side immediately
+      let audMembersCount = 0;
+      if (selectedAudienceId && (audienceSource === "audience" || audienceSource === "both")) {
+        const aud = audiences.find((a) => a.id === selectedAudienceId);
+        audMembersCount = aud?.member_count || 0;
+      }
+
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      const cleanManual = manualRecipients.map((e) => (e || "").toLowerCase().trim()).filter(Boolean);
+      const validManual = cleanManual.filter((e) => emailRegex.test(e));
+      const invalidCount = cleanManual.length - validManual.length;
+      const uniqueManual = [...new Set(validManual)];
+      const duplicatesCount = validManual.length - uniqueManual.length;
+
+      const rawCount = audienceSource === "manual" ? uniqueManual.length : audienceSource === "audience" ? audMembersCount : audMembersCount + uniqueManual.length;
+      const suppSet = new Set(suppressions.map((s) => (s.email || "").toLowerCase().trim()));
+      const suppressedCount = uniqueManual.filter((e) => suppSet.has(e)).length;
+
+      const excludedCount = uniqueManual.filter((e) => exclusions.some((ex) => {
+        const cleanEx = (ex || "").toLowerCase().trim();
+        return cleanEx.startsWith("@") ? e.endsWith(cleanEx) : e === cleanEx;
+      })).length;
+
+      const calculatedFinal = Math.max(0, rawCount - suppressedCount - excludedCount);
+
+      if (isCurrent) {
+        setRecipientBreakdown({
+          raw_count: rawCount,
+          audience_count: audMembersCount,
+          manual_additions_count: uniqueManual.length,
+          duplicates_count: duplicatesCount,
+          invalid_count: invalidCount,
+          suppressed_count: suppressedCount,
+          excluded_count: excludedCount,
+          final_count: calculatedFinal,
+        });
+        setIsCalculatingBreakdown(false);
+      }
+
+      // 2. Fetch authoritative server calculation if campaign ID is persisted
+      if (campId) {
+        try {
+          const resp = await api.post(`/admin/communications/campaigns/${campId}/calculate-recipients`);
+          if (isCurrent && resp.data) {
+            setRecipientBreakdown(resp.data);
+          }
+        } catch (err) {
+          // Client-side fallback remains active
+        }
+      }
+    }, 350);
+
+    return () => {
+      isCurrent = false;
+      clearTimeout(timer);
+    };
+  }, [campId, campaignEnv, audienceSource, selectedAudienceId, manualRecipients, exclusions, audiences, suppressions]);
 
   // ── Local Storage Draft Caching ──────────────────────────────────────────
   useEffect(() => {
@@ -358,28 +430,7 @@ export const CampaignStudio = ({
     return () => clearTimeout(autosaveTimerRef.current);
   }, [emailHtml, emailSubject, campTitle, campaignEnv, manualRecipients, testRecipients, exclusions, campId, handleSaveDraft]);
 
-  // ── Recipient Calculation ────────────────────────────────────────────────
-  const handleCalculateRecipients = async () => {
-    let id = campId;
-    if (!id) {
-      id = await handleSaveDraft(false);
-      if (!id) return;
-    } else {
-      await handleSaveDraft(true);
-    }
-
-    setLoadingBreakdown(true);
-    try {
-      const resp = await api.post(`/admin/communications/campaigns/${id}/calculate-recipients`);
-      setRecipientBreakdown(resp.data);
-    } catch (err) {
-      toast({ variant: "destructive", title: "Calculation Failed", description: err.response?.data?.detail || err.message });
-    } finally {
-      setLoadingBreakdown(false);
-    }
-  };
-
-  // ── Unified Test Send (Single Canonical Endpoint) ─────────────────────────
+  // ── Unified Test Send (Single Canonical /send-test Endpoint) ──────────────
   const handleSendTest = async () => {
     if (testRecipients.length === 0) {
       toast({ variant: "destructive", title: "No Test Recipients", description: "Add at least one test recipient email." });
@@ -394,10 +445,9 @@ export const CampaignStudio = ({
     setLastTestResult(null);
 
     try {
-      // Auto-save draft silently in background
+      // Auto-save draft silently
       handleSaveDraft(true);
 
-      // Call single canonical /send-test endpoint (works on all environments)
       const resp = await api.post("/admin/communications/send-test", {
         recipient_emails: testRecipients,
         subject: emailSubject,
@@ -416,22 +466,17 @@ export const CampaignStudio = ({
       } else {
         toast({
           variant: "destructive",
-          title: resp.data.status === "provider_disabled" ? "Provider Not Ready" : "Test Send Failed",
+          title: resp.data.status === "provider_disabled" ? "Provider Not Configured" : "Test Send Failed",
           description: resp.data.error_message || "Could not deliver test email.",
         });
       }
     } catch (err) {
-      const is404 = err.response?.status === 404;
-      const errorMsg = is404
-        ? "The communications service is currently reconciling deployment. Please verify backend connectivity."
-        : err.response?.data?.detail || err.message;
-
+      const errorMsg = err.response?.data?.detail || err.message;
       setLastTestResult({
         success: false,
         status: "error",
         error_message: errorMsg,
       });
-
       toast({
         variant: "destructive",
         title: "Test Send Error",
@@ -442,7 +487,7 @@ export const CampaignStudio = ({
     }
   };
 
-  // ── Review & Launch Flow ──────────────────────────────────────────────────
+  // ── Review & Launch Flow (Production Safety Confirmation) ────────────────
   const handleOpenLaunch = async () => {
     if (!campTitle.trim()) {
       toast({ variant: "destructive", title: "Campaign Name Required" });
@@ -470,7 +515,7 @@ export const CampaignStudio = ({
         toast({
           variant: "destructive",
           title: "Pre-Flight Validation Blocked",
-          description: validation.errors?.join(". ") || "Fix blocking errors before launching.",
+          description: validation.errors?.join(". ") || "Fix blocking checklist errors before launching.",
         });
         return;
       }
@@ -502,7 +547,7 @@ export const CampaignStudio = ({
     }
   };
 
-  // ── Direct Manual Recipient Import (CSV / XLSX) ──────────────────────────
+  // ── Direct Manual Recipient Import (CSV / XLSX / Multi-column) ───────────
   const handleFileUpload = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -510,7 +555,7 @@ export const CampaignStudio = ({
     const reader = new FileReader();
     reader.onload = (evt) => {
       const content = evt.target.result;
-      const parsed = parseCsvContent(content);
+      const parsed = parseSmartEmailContent(content);
       setManualImportSummary({
         filename: file.name,
         ...parsed,
@@ -519,25 +564,29 @@ export const CampaignStudio = ({
     reader.readAsText(file);
   };
 
-  const handlePasteParse = () => {
-    if (!manualImportPastedText.trim()) return;
-    const parsed = parseCsvContent(manualImportPastedText);
-    setManualImportSummary({
-      filename: "Pasted text",
-      ...parsed,
-    });
+  const handlePastedTextChange = (text) => {
+    setManualImportPastedText(text);
+    if (text.trim()) {
+      const parsed = parseSmartEmailContent(text);
+      setManualImportSummary({
+        filename: "Pasted addresses",
+        ...parsed,
+      });
+    } else {
+      setManualImportSummary(null);
+    }
   };
 
   const handleApplyManualImport = () => {
     if (!manualImportSummary || !manualImportSummary.validEmails) return;
 
-    const existingSet = new Set(manualRecipients.map((e) => e.toLowerCase()));
+    const existingSet = new Set(manualRecipients.map((e) => (e || "").toLowerCase().trim()));
     const newEmails = manualImportSummary.validEmails.filter((e) => !existingSet.has(e));
 
     setManualRecipients([...manualRecipients, ...newEmails]);
     toast({
       title: "Recipients Imported",
-      description: `Added ${newEmails.length} verified email recipient(s) to manual list.`,
+      description: `Added ${newEmails.length} verified recipient(s) to manual list.`,
     });
 
     setManualImportModalOpen(false);
@@ -545,7 +594,7 @@ export const CampaignStudio = ({
     setManualImportPastedText("");
   };
 
-  // ── Exclusions Helper ────────────────────────────────────────────────────
+  // ── Exclusions Management ────────────────────────────────────────────────
   const addExclusion = () => {
     const val = exclusionInput.trim().toLowerCase();
     if (!val || exclusions.includes(val)) return;
@@ -555,7 +604,7 @@ export const CampaignStudio = ({
 
   return (
     <div className="space-y-6">
-      {/* ── Section 1: Campaign Identity & Environment Mode ───────────────── */}
+      {/* ── Section 1: Campaign Identity & Send Mode ───────────────────────── */}
       <div className="bg-obsidian border border-white/10 rounded-2xl p-5 space-y-4 shadow-sm">
         <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
           {/* Campaign Name */}
@@ -567,21 +616,21 @@ export const CampaignStudio = ({
               id="campaign-name-input"
               value={campTitle}
               onChange={(e) => setCampTitle(e.target.value)}
-              placeholder="e.g. Q3 Technical Advisory & Regulatory Briefing"
+              placeholder="e.g. Q3 Technical Advisory & Strategy Briefing"
               className="bg-white/5 border-white/10 text-cloud text-sm h-10 font-medium"
             />
           </div>
 
-          {/* Real Environment Mode Selector */}
+          {/* Campaign Send Mode (Independent from Deployment) */}
           <div className="w-full lg:w-auto shrink-0 space-y-1">
             <label className="block text-[11px] text-fog font-mono uppercase tracking-wider">
-              Dispatch Mode
+              Campaign Send Mode
             </label>
             <div className="flex items-center gap-1.5 p-1 rounded-xl bg-white/5 border border-white/10">
               <button
                 type="button"
                 onClick={() => setCampaignEnv("test")}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold font-mono transition-all ${
+                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold font-mono transition-all ${
                   isTestMode
                     ? "bg-emerald-600 text-white shadow-md shadow-emerald-950/50"
                     : "text-fog hover:text-cloud hover:bg-white/5"
@@ -594,7 +643,7 @@ export const CampaignStudio = ({
               <button
                 type="button"
                 onClick={() => setCampaignEnv("production")}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold font-mono transition-all ${
+                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold font-mono transition-all ${
                   !isTestMode
                     ? "bg-rose-600 text-white shadow-md shadow-rose-950/50"
                     : "text-fog hover:text-cloud hover:bg-white/5"
@@ -607,7 +656,7 @@ export const CampaignStudio = ({
           </div>
         </div>
 
-        {/* Environment Safety Notification Banner */}
+        {/* Safety Boundary Banner */}
         <div className={`p-3.5 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs transition-colors ${
           isTestMode
             ? "bg-emerald-950/25 border-emerald-500/30 text-emerald-300"
@@ -617,20 +666,20 @@ export const CampaignStudio = ({
             {isTestMode ? <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" /> : <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />}
             <span>
               {isTestMode
-                ? "TEST MODE: Emails will be strictly dispatched ONLY to configured test recipients. Audience lists are blocked."
+                ? "TEST MODE: Emails will strictly dispatch ONLY to configured test recipients. Audience lists are blocked."
                 : "PRODUCTION MODE: Live broadcast mode. Audience recipients and safety confirmation will be required."}
             </span>
           </div>
 
           <div className="flex items-center gap-3 font-mono text-[11px] shrink-0">
-            <span>From: <strong className="text-cloud">{fromEmail}</strong></span>
-            {autosaveStatus === "saving" && <span className="text-iris animate-pulse">Autosaving…</span>}
+            <span>Sender: <strong className="text-cloud">{fromEmail}</strong></span>
+            {autosaveStatus === "saving" && <span className="text-iris animate-pulse">Saving…</span>}
             {autosaveStatus === "saved" && <span className="text-emerald-400 flex items-center gap-1"><Check className="w-3 h-3" /> Saved</span>}
           </div>
         </div>
       </div>
 
-      {/* ── Section 2: Email Content Editor + Real-time Live Preview ───────── */}
+      {/* ── Section 2: Content Editor + Real-Time Live Preview ──────────────── */}
       <div className="bg-obsidian border border-white/10 rounded-2xl p-5 space-y-4">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div>
@@ -656,12 +705,12 @@ export const CampaignStudio = ({
           </div>
         </div>
 
-        {/* Email Subject */}
+        {/* Email Subject Line */}
         <div>
           <label className="block text-[11px] text-fog mb-1.5 font-medium">EMAIL SUBJECT LINE *</label>
           <Input
             id="campaign-subject-input"
-            placeholder="e.g. Important Regulatory & Strategy Briefing — Navigatte"
+            placeholder="e.g. Important Regulatory & Technology Advisory Briefing"
             value={emailSubject}
             onChange={(e) => {
               setEmailSubject(e.target.value);
@@ -695,7 +744,7 @@ export const CampaignStudio = ({
           )}
         </div>
 
-        {/* 2-Pane Editor & Real-Time Preview */}
+        {/* 2-Pane Editor & Sandboxed Live Preview */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pt-1">
           {/* Left Pane: HTML Editor */}
           <div className="space-y-1.5">
@@ -703,7 +752,7 @@ export const CampaignStudio = ({
               <span className="font-mono flex items-center gap-1.5">
                 <FileCode className="w-3.5 h-3.5 text-iris" /> HTML BODY
               </span>
-              <span className="text-[10px] text-fog/60 font-mono">Exact HTML sent to recipients</span>
+              <span className="text-[10px] text-fog/60 font-mono">Exact HTML delivered to recipients</span>
             </div>
             <textarea
               ref={textareaRef}
@@ -719,7 +768,7 @@ export const CampaignStudio = ({
             />
           </div>
 
-          {/* Right Pane: Real-Time Preview (Sandboxed iframe) */}
+          {/* Right Pane: Real-Time Preview */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-xs text-fog">
               <div className="flex items-center gap-1.5">
@@ -772,13 +821,13 @@ export const CampaignStudio = ({
             </div>
 
             <p className="text-[10px] text-fog/50 font-mono text-center">
-              Preview renders sample variables — actual recipient attributes used on send
+              Renders sample variables for preview — actual recipient variables injected on dispatch
             </p>
           </div>
         </div>
       </div>
 
-      {/* ── Section 3: Test Recipients & Instant Test Send ────────────────── */}
+      {/* ── Section 3: Test Recipients & Instant Test Dispatch ─────────────── */}
       <div className="bg-obsidian border border-white/10 rounded-2xl p-5 space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -788,7 +837,7 @@ export const CampaignStudio = ({
               Safe Sandbox
             </span>
           </div>
-          <span className="text-[11px] text-fog">Dispatches real emails to test addresses only</span>
+          <span className="text-[11px] text-fog font-mono">Dispatches real test email to test chips only</span>
         </div>
 
         <div>
@@ -806,6 +855,7 @@ export const CampaignStudio = ({
         <div className="flex flex-wrap items-center gap-3">
           <Button
             id="send-test-btn"
+            type="button"
             onClick={handleSendTest}
             disabled={sendingTest || testRecipients.length === 0}
             className="bg-emerald-600 hover:bg-emerald-500 text-white h-9 text-xs px-4 rounded-lg font-medium shadow-md shadow-emerald-950/40"
@@ -845,12 +895,12 @@ export const CampaignStudio = ({
         </div>
       </div>
 
-      {/* ── Section 4: Campaign Recipients & Direct CSV/XLSX Import ────────── */}
+      {/* ── Section 4: Target Audience & Automatic Real-time Breakdown ─────── */}
       <div className="bg-obsidian border border-white/10 rounded-2xl p-5 space-y-4">
         <div className="flex items-center justify-between">
           <span className="text-xs font-mono uppercase tracking-wider text-fog">Campaign Target Audience</span>
           <span className="text-[11px] text-fog font-mono">
-            {isTestMode ? "Configured for upcoming production launch" : "Active targets for live broadcast"}
+            {isTestMode ? "Configured for upcoming production broadcast" : "Active targets for live broadcast"}
           </span>
         </div>
 
@@ -964,52 +1014,69 @@ export const CampaignStudio = ({
           </div>
         </div>
 
-        {/* Recipient Calculation Bar */}
-        <div className="p-3.5 bg-black/40 border border-white/10 rounded-xl space-y-2">
+        {/* AUTOMATIC REAL-TIME RECIPIENT BREAKDOWN (NO MANUAL CLICK REQUIRED) */}
+        <div className="p-4 bg-black/40 border border-white/10 rounded-xl space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-xs text-cloud font-medium">
               <Users className="w-3.5 h-3.5 text-iris" />
-              Recipient Calculation &amp; Safety Audit
+              <span>Automatic Recipient Breakdown</span>
+              {isCalculatingBreakdown && <Loader2 className="w-3 h-3 text-iris animate-spin" />}
             </div>
-            <button
-              type="button"
-              onClick={handleCalculateRecipients}
-              disabled={loadingBreakdown}
-              className="text-[10px] text-iris hover:text-iris/80 font-mono flex items-center gap-1"
-            >
-              {loadingBreakdown ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-              {loadingBreakdown ? "Calculating…" : "Calculate Breakdown"}
-            </button>
+
+            <div className="text-[11px] font-mono text-fog">
+              {isTestMode ? (
+                <span className="text-emerald-400">TEST MODE Target: <strong>{testRecipients.length}</strong></span>
+              ) : (
+                <span className="text-emerald-400">Net Deliverable: <strong>{recipientBreakdown?.final_count ?? 0}</strong></span>
+              )}
+            </div>
           </div>
 
-          {recipientBreakdown ? (
-            <div className="grid grid-cols-4 gap-2 text-xs font-mono pt-1 border-t border-white/5">
-              <div className="bg-white/[0.02] p-2 rounded text-center">
-                <div className="text-sm font-bold text-cloud">{recipientBreakdown.raw_count}</div>
-                <div className="text-[10px] text-fog">Raw Total</div>
+          {/* Test vs Production Mode Breakdown Comparison */}
+          {isTestMode ? (
+            <div className="p-3 bg-emerald-950/20 border border-emerald-500/25 rounded-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs font-mono">
+              <div className="space-y-0.5">
+                <div className="text-emerald-300 font-semibold">TEST MODE SANDBOX ACTIVE</div>
+                <div className="text-fog text-[11px]">
+                  Audience contacts ({recipientBreakdown?.final_count ?? 0}) are safely blocked from dispatch.
+                </div>
               </div>
-              <div className="bg-white/[0.02] p-2 rounded text-center">
-                <div className="text-sm font-bold text-amber-400">{recipientBreakdown.suppressed_count}</div>
-                <div className="text-[10px] text-fog">Suppressed</div>
-              </div>
-              <div className="bg-white/[0.02] p-2 rounded text-center">
-                <div className="text-sm font-bold text-rose-400">{recipientBreakdown.excluded_count}</div>
-                <div className="text-[10px] text-fog">Excluded</div>
-              </div>
-              <div className="bg-emerald-950/30 border border-emerald-500/30 p-2 rounded text-center">
-                <div className="text-sm font-bold text-emerald-400">{recipientBreakdown.final_count}</div>
-                <div className="text-[10px] text-emerald-300">Net Deliverable</div>
+              <div className="px-3 py-1 bg-emerald-500/15 border border-emerald-500/30 rounded text-emerald-400 font-bold text-sm">
+                Target: {testRecipients.length} Test Recipient{testRecipients.length > 1 ? "s" : ""}
               </div>
             </div>
           ) : (
-            <p className="text-[11px] text-fog/60 font-mono text-center py-1">
-              Click Calculate Breakdown to audit net deliverable recipients after suppression &amp; exclusions
-            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 text-xs font-mono pt-1">
+              <div className="bg-white/[0.02] p-2 rounded text-center">
+                <div className="text-sm font-bold text-cloud">{recipientBreakdown?.audience_count ?? 0}</div>
+                <div className="text-[10px] text-fog">Audience</div>
+              </div>
+              <div className="bg-white/[0.02] p-2 rounded text-center">
+                <div className="text-sm font-bold text-cloud">{recipientBreakdown?.manual_additions_count ?? 0}</div>
+                <div className="text-[10px] text-fog">Manual</div>
+              </div>
+              <div className="bg-white/[0.02] p-2 rounded text-center">
+                <div className="text-sm font-bold text-amber-400">{recipientBreakdown?.duplicates_count ?? 0}</div>
+                <div className="text-[10px] text-fog">Duplicates</div>
+              </div>
+              <div className="bg-white/[0.02] p-2 rounded text-center">
+                <div className="text-sm font-bold text-amber-400">{recipientBreakdown?.suppressed_count ?? 0}</div>
+                <div className="text-[10px] text-fog">Suppressed</div>
+              </div>
+              <div className="bg-white/[0.02] p-2 rounded text-center">
+                <div className="text-sm font-bold text-rose-400">{recipientBreakdown?.excluded_count ?? 0}</div>
+                <div className="text-[10px] text-fog">Excluded</div>
+              </div>
+              <div className="bg-emerald-950/30 border border-emerald-500/30 p-2 rounded text-center">
+                <div className="text-sm font-bold text-emerald-400">{recipientBreakdown?.final_count ?? 0}</div>
+                <div className="text-[10px] text-emerald-300 font-semibold">Final Send</div>
+              </div>
+            </div>
           )}
         </div>
       </div>
 
-      {/* ── Section 5: Bottom Action Bar (Save Draft, Send Test, Launch) ──── */}
+      {/* ── Section 5: Streamlined Action Bar (Save Draft, Send Test, Launch) ─ */}
       <div className="bg-obsidian border border-white/10 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3 shadow-lg">
         <div className="flex items-center gap-2">
           <Button
@@ -1035,7 +1102,7 @@ export const CampaignStudio = ({
             className="border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 h-9 text-xs rounded-lg font-mono"
           >
             <Send className="w-3.5 h-3.5 mr-1.5" />
-            Send Test
+            Send Test ({testRecipients.length})
           </Button>
         </div>
 
@@ -1051,7 +1118,7 @@ export const CampaignStudio = ({
           }`}
         >
           {validating ? (
-            <><Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />Validating Pre-flight…</>
+            <><Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />Validating…</>
           ) : (
             <><Zap className="w-3.5 h-3.5 mr-2" />Review &amp; Launch {isTestMode ? "(Test)" : "(Production)"}</>
           )}
@@ -1065,7 +1132,7 @@ export const CampaignStudio = ({
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
               <div>
                 <h3 className="text-base font-medium text-cloud">Import Manual Recipients</h3>
-                <p className="text-xs text-fog mt-0.5">Upload a CSV/XLSX file or paste text containing email addresses.</p>
+                <p className="text-xs text-fog mt-0.5">Upload a CSV/XLSX file or paste text. Emails in any column are auto-detected.</p>
               </div>
               <button
                 type="button"
@@ -1085,7 +1152,7 @@ export const CampaignStudio = ({
                   importTab === "file" ? "bg-iris text-white" : "text-fog hover:text-cloud"
                 }`}
               >
-                Upload File (CSV / XLSX)
+                Upload CSV / XLSX File
               </button>
               <button
                 type="button"
@@ -1113,37 +1180,28 @@ export const CampaignStudio = ({
                 >
                   <FileSpreadsheet className="w-8 h-8 text-iris mx-auto mb-2 opacity-80" />
                   <p className="text-xs text-cloud font-medium">Click to select CSV or XLSX file</p>
-                  <p className="text-[10px] text-fog mt-0.5">Supports CSV, XLSX, XLS, TXT</p>
+                  <p className="text-[10px] text-fog mt-0.5">Scans all columns for email addresses</p>
                 </div>
               </div>
             ) : (
               <div className="space-y-2 text-xs">
-                <label className="block text-fog">Paste text or CSV lines:</label>
+                <label className="block text-fog">Paste text or CSV lines (auto-parsed on paste):</label>
                 <textarea
                   rows={6}
                   value={manualImportPastedText}
-                  onChange={(e) => setManualImportPastedText(e.target.value)}
+                  onChange={(e) => handlePastedTextChange(e.target.value)}
                   placeholder={`client1@enterprise.com\nclient2@corp.io, Sarah Connor, Corp\npartner@tech.io`}
                   className="w-full bg-white/5 border border-white/10 rounded-lg p-2.5 text-xs text-cloud font-mono outline-none focus:border-iris resize-y"
                 />
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={handlePasteParse}
-                  className="border-white/10 text-cloud text-xs h-7"
-                >
-                  Parse Pasted Content
-                </Button>
               </div>
             )}
 
-            {/* Import Summary Statistics */}
+            {/* Instant Import Summary Statistics */}
             {manualImportSummary && (
               <div className="p-3.5 bg-white/5 border border-white/10 rounded-xl space-y-2 text-xs font-mono">
                 <div className="text-cloud font-semibold flex items-center justify-between">
-                  <span>Parsed: {manualImportSummary.filename}</span>
-                  <span className="text-emerald-400 font-bold">+{manualImportSummary.validCount} valid</span>
+                  <span>Source: {manualImportSummary.filename}</span>
+                  <span className="text-emerald-400 font-bold">+{manualImportSummary.validCount} valid emails</span>
                 </div>
                 <div className="grid grid-cols-3 gap-2 text-center text-[11px] pt-1">
                   <div className="bg-black/30 p-1.5 rounded">

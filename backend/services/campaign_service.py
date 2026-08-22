@@ -69,18 +69,40 @@ class CampaignService:
         In production mode: audience + manual recipients, minus suppressed and excluded.
         
         Returns a dict including:
-            raw_count, suppressed_count, excluded_count, final_count,
-            audience_count, manual_additions_count, recipients (list of dicts)
+            raw_count, audience_count, manual_additions_count, duplicates_count,
+            invalid_count, suppressed_count, excluded_count, final_count,
+            recipients (list of dicts)
         """
+        email_regex = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
         if campaign.environment == "test":
             # Test Mode: HARD SAFETY BOUNDARY
             # Under NO circumstances are audience contacts used for test dispatch.
             # Only explicit test_recipients are valid targets.
-            test_list = [e.lower().strip() for e in (campaign.test_recipients or []) if e.strip()]
+            test_list = []
+            duplicates_count = 0
+            invalid_count = 0
+            seen = set()
+
+            for raw in (campaign.test_recipients or []):
+                clean = raw.lower().strip()
+                if not clean:
+                    continue
+                if not email_regex.match(clean):
+                    invalid_count += 1
+                    continue
+                if clean in seen:
+                    duplicates_count += 1
+                    continue
+                seen.add(clean)
+                test_list.append(clean)
+
             return {
                 "raw_count": len(test_list),
                 "audience_count": 0,
                 "manual_additions_count": 0,
+                "duplicates_count": duplicates_count,
+                "invalid_count": invalid_count,
                 "suppressed_count": 0,
                 "excluded_count": 0,
                 "final_count": len(test_list),
@@ -103,6 +125,8 @@ class CampaignService:
         # Production Mode: gather candidates from selected source(s)
         candidate_contacts: Dict[str, Dict[str, Any]] = {}
         audience_emails: set = set()
+        duplicates_count = 0
+        invalid_count = 0
 
         # 1. Audience contacts (if audience_source includes audience)
         if campaign.audience_id and campaign.audience_source in ("audience", "both"):
@@ -110,7 +134,10 @@ class CampaignService:
                 {"audience_id": campaign.audience_id, "is_suppressed": False}
             ).to_list(10000)
             for c in aud_contacts:
-                em = c["email"].lower().strip()
+                em = (c.get("email") or "").lower().strip()
+                if not em or not email_regex.match(em):
+                    invalid_count += 1
+                    continue
                 audience_emails.add(em)
                 candidate_contacts[em] = {
                     "email": em,
@@ -125,8 +152,15 @@ class CampaignService:
         manual_additions_count = 0
         if campaign.audience_source in ("manual", "both"):
             for raw_em in getattr(campaign, "manual_recipients", []):
-                clean_em = raw_em.lower().strip()
-                if clean_em and clean_em not in candidate_contacts:
+                clean_em = (raw_em or "").lower().strip()
+                if not clean_em:
+                    continue
+                if not email_regex.match(clean_em):
+                    invalid_count += 1
+                    continue
+                if clean_em in candidate_contacts:
+                    duplicates_count += 1
+                else:
                     candidate_contacts[clean_em] = {
                         "email": clean_em,
                         "name": "",
@@ -137,7 +171,7 @@ class CampaignService:
 
         raw_count = len(candidate_contacts)
 
-        # 3. Global Suppression filter (re-check at launch time for freshness)
+        # 3. Global Suppression filter (fresh check at launch time)
         suppression_emails = set(await db.email_suppressions.distinct("email"))
         unsuppressed = {
             em: data for em, data in candidate_contacts.items()
@@ -172,6 +206,8 @@ class CampaignService:
             "raw_count": raw_count,
             "audience_count": audience_count,
             "manual_additions_count": manual_additions_count,
+            "duplicates_count": duplicates_count,
+            "invalid_count": invalid_count,
             "suppressed_count": suppressed_count,
             "excluded_count": excluded_count,
             "final_count": len(final_recipients),
@@ -184,19 +220,17 @@ class CampaignService:
         db: AsyncIOMotorDatabase,
         campaign: CampaignModel,
     ) -> Tuple[bool, Dict[str, Any], List[str]]:
-        """Evaluates launch prerequisites and returns (is_valid, checklist_dict, error_messages)."""
+        """Evaluates launch prerequisites and returns (is_valid, checklist_dict, error_messages).
+        
+        Separates Deployment Environment (infrastructure) from Campaign Send Mode (test vs production).
+        """
         errors: List[str] = []
         warnings: List[str] = []
         now = datetime.now(timezone.utc)
 
-        # 1. Environment check
-        current_env = getattr(settings, "COMMUNICATIONS_ENVIRONMENT", "test")
-        env_match = (campaign.environment == current_env)
-        if not env_match:
-            errors.append(
-                f"Campaign environment '{campaign.environment}' does not match system "
-                f"environment '{current_env}'. Update campaign or system environment."
-            )
+        # 1. Campaign Send Mode check (must be either 'test' or 'production')
+        if campaign.environment not in ("test", "production"):
+            errors.append(f"Invalid campaign send mode '{campaign.environment}'. Must be 'test' or 'production'.")
 
         # 2. Provider health
         provider_enabled = settings.RESEND_ENABLED
@@ -225,19 +259,19 @@ class CampaignService:
         if not campaign.subject or not campaign.subject.strip():
             errors.append("Campaign email subject line is required.")
 
-        # 5. Recipient Resolution
+        # 5. Recipient Resolution & Safety Boundaries
         rec_calc = await cls.resolve_recipients(db, campaign)
         final_count = rec_calc["final_count"]
 
         if campaign.environment == "test":
             if final_count == 0:
                 errors.append(
-                    "Test mode requires at least one configured test_recipient on the campaign."
+                    "Test mode requires at least one valid configured test recipient on the campaign."
                 )
         else:
             if final_count == 0:
                 errors.append(
-                    "Production audience has 0 deliverable contacts after suppression and exclusions."
+                    "Production audience has 0 deliverable contacts after deduplication, suppression, and exclusions."
                 )
 
         # 6. Unresolved variable check (pre-flight render with sample vars)
@@ -273,7 +307,7 @@ class CampaignService:
                 warnings.append(f"Could not complete pre-flight render check: {e}")
 
         checklist = {
-            "environment_confirmed": env_match,
+            "environment_confirmed": True,
             "environment": campaign.environment,
             "provider_healthy": provider_enabled,
             "template_active": template_valid or has_custom_html,
@@ -282,6 +316,8 @@ class CampaignService:
             "raw_recipients_count": rec_calc["raw_count"],
             "audience_count": rec_calc.get("audience_count", 0),
             "manual_additions_count": rec_calc.get("manual_additions_count", 0),
+            "duplicates_count": rec_calc.get("duplicates_count", 0),
+            "invalid_count": rec_calc.get("invalid_count", 0),
             "suppressed_recipients_count": rec_calc["suppressed_count"],
             "excluded_recipients_count": rec_calc["excluded_count"],
             "target_recipients_count": final_count,

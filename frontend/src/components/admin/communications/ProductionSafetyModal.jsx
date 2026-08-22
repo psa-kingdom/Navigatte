@@ -128,23 +128,26 @@ export const ProductionSafetyModal = ({
             <div className="flex items-center gap-2">
               <Users className="w-3.5 h-3.5 text-iris" />
               <span className="text-[10px] font-mono uppercase tracking-widest text-fog">
-                Recipient Breakdown
+                Recipient Verification Breakdown
               </span>
             </div>
-            <div className="grid grid-cols-3 gap-2 text-xs">
+            <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-xs">
               {[
-                { label: "Raw", value: checklist?.raw_recipients_count ?? 0, color: "text-cloud" },
+                { label: "Audience", value: checklist?.audience_count ?? 0, color: "text-cloud" },
+                { label: "Manual", value: checklist?.manual_additions_count ?? 0, color: "text-cloud" },
+                { label: "Duplicates", value: checklist?.duplicates_count ?? 0, color: "text-amber-400" },
                 { label: "Suppressed", value: checklist?.suppressed_recipients_count ?? 0, color: "text-amber-400" },
                 { label: "Excluded", value: checklist?.excluded_recipients_count ?? 0, color: "text-rose-400" },
+                { label: "Invalid", value: checklist?.invalid_count ?? 0, color: "text-rose-400" },
               ].map((item) => (
-                <div key={item.label} className="bg-black/40 rounded-lg p-2.5 text-center">
-                  <div className={`text-lg font-bold font-mono ${item.color}`}>{item.value}</div>
+                <div key={item.label} className="bg-black/40 rounded-lg p-2 text-center">
+                  <div className={`text-base font-bold font-mono ${item.color}`}>{item.value}</div>
                   <div className="text-[10px] text-fog mt-0.5">{item.label}</div>
                 </div>
               ))}
             </div>
-            <div className="flex items-center justify-between px-1">
-              <span className="text-xs text-fog">Final deliverable recipients:</span>
+            <div className="flex items-center justify-between px-1 pt-1 border-t border-white/10">
+              <span className="text-xs text-fog">Net deliverable recipients:</span>
               <span className="text-2xl font-bold text-emerald-400 font-mono">{finalCount}</span>
             </div>
           </div>

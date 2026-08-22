@@ -168,7 +168,7 @@ async def calculate_campaign_recipients(
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> Dict[str, Any]:
-    """Calculates real-time net deliverable recipient count with exclusion and suppression breakdown."""
+    """Calculates real-time net deliverable recipient count with full deduplication, exclusion, and suppression breakdown."""
     doc = await db.campaigns.find_one({"_id": campaign_id})
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found.")
@@ -176,6 +176,10 @@ async def calculate_campaign_recipients(
     calc = await CampaignService.resolve_recipients(db, campaign)
     return {
         "raw_count": calc["raw_count"],
+        "audience_count": calc.get("audience_count", 0),
+        "manual_additions_count": calc.get("manual_additions_count", 0),
+        "duplicates_count": calc.get("duplicates_count", 0),
+        "invalid_count": calc.get("invalid_count", 0),
         "suppressed_count": calc["suppressed_count"],
         "excluded_count": calc["excluded_count"],
         "final_count": calc["final_count"],
