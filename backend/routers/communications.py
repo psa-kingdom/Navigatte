@@ -5,10 +5,13 @@ delivery metrics, and live test dispatch via the canonical render pipeline.
 """
 
 from datetime import datetime, timezone
+import io
 import logging
+import re
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
+import pandas as pd
 from pydantic import BaseModel, EmailStr
 
 from core.config import settings
@@ -154,6 +157,124 @@ async def get_communications_diagnostics(
         "system": {
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },
+    }
+
+
+@router.post("/parse-import-file")
+async def parse_import_file(
+    file: UploadFile = File(...),
+    admin: AdminUser = Depends(get_current_admin),
+    db: AsyncIOMotorDatabase = Depends(get_database),
+) -> Dict[str, Any]:
+    """Parses an uploaded CSV, XLSX, XLS, or TXT file and intelligently extracts email addresses across all columns."""
+    filename = file.filename or "uploaded_file"
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty.")
+
+    email_regex = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
+    extracted_emails: List[str] = []
+    total_rows = 0
+    invalid_rows = 0
+
+    if ext in ("xlsx", "xls"):
+        try:
+            excel_data = pd.read_excel(io.BytesIO(contents), sheet_name=None, header=None)
+            for sheet_name, df in excel_data.items():
+                total_rows += len(df)
+                for _, row in df.iterrows():
+                    row_had_email = False
+                    for cell in row:
+                        if cell is not None and not pd.isna(cell):
+                            cell_str = str(cell).strip()
+                            found = email_regex.findall(cell_str)
+                            if found:
+                                row_had_email = True
+                                for em in found:
+                                    extracted_emails.append(em.lower().strip())
+                    if not row_had_email and not row.isna().all():
+                        invalid_rows += 1
+        except Exception as e:
+            logger.error(f"Failed to parse Excel file {filename}: {e}")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to parse Excel file: {str(e)}")
+    elif ext in ("csv",):
+        try:
+            df = pd.read_csv(io.BytesIO(contents))
+            total_rows = len(df)
+            for _, row in df.iterrows():
+                row_had_email = False
+                for cell in row:
+                    if cell is not None and not pd.isna(cell):
+                        cell_str = str(cell).strip()
+                        found = email_regex.findall(cell_str)
+                        if found:
+                            row_had_email = True
+                            for em in found:
+                                extracted_emails.append(em.lower().strip())
+                if not row_had_email:
+                    invalid_rows += 1
+        except Exception:
+            # Fallback to plain line scanning
+            try:
+                text = contents.decode("utf-8")
+            except UnicodeDecodeError:
+                text = contents.decode("latin-1", errors="ignore")
+            lines = [l.strip() for l in text.splitlines() if l.strip()]
+            total_rows = len(lines)
+            for line in lines:
+                found = email_regex.findall(line)
+                if found:
+                    for em in found:
+                        extracted_emails.append(em.lower().strip())
+                else:
+                    invalid_rows += 1
+    else:
+        # Plain text
+        try:
+            text = contents.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                text = contents.decode("latin-1")
+            except Exception:
+                text = contents.decode("utf-8", errors="ignore")
+
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        total_rows = len(lines)
+        for line in lines:
+            found = email_regex.findall(line)
+            if found:
+                for em in found:
+                    extracted_emails.append(em.lower().strip())
+            else:
+                invalid_rows += 1
+
+    # Deduplicate within this import batch
+    unique_emails: List[str] = []
+    seen = set()
+    duplicate_count = 0
+    for em in extracted_emails:
+        if em in seen:
+            duplicate_count += 1
+        else:
+            seen.add(em)
+            unique_emails.append(em)
+
+    # Check suppression list
+    suppression_emails = set(await db.email_suppressions.distinct("email"))
+    suppressed = [e for e in unique_emails if e in suppression_emails]
+    valid_unsuppressed = [e for e in unique_emails if e not in suppression_emails]
+
+    return {
+        "filename": filename,
+        "total_rows": total_rows,
+        "valid_emails": valid_unsuppressed,
+        "valid_count": len(valid_unsuppressed),
+        "duplicate_count": duplicate_count,
+        "invalid_count": invalid_rows,
+        "suppressed_count": len(suppressed),
+        "suppressed_emails": suppressed,
     }
 
 

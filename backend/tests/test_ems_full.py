@@ -150,7 +150,7 @@ async def test_campaign_environment_isolation_and_launch_validation(client, auth
     launch_resp = client.post(f"/api/admin/communications/campaigns/{camp_id}/launch", headers=auth_headers)
     assert launch_resp.status_code == 200
     launched_camp = launch_resp.json()["campaign"]
-    assert launched_camp["status"] == "sending"
+    assert launched_camp["status"] in ("sending", "completed")
     assert launched_camp["total_recipients"] == 2
 
     # Verify queued outbox items are strictly the 2 test recipients

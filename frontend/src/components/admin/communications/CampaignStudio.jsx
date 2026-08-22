@@ -548,20 +548,42 @@ export const CampaignStudio = ({
   };
 
   // ── Direct Manual Recipient Import (CSV / XLSX / Multi-column) ───────────
-  const handleFileUpload = (e) => {
+  const [isParsingFile, setIsParsingFile] = useState(false);
+
+  const handleFileUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      const content = evt.target.result;
-      const parsed = parseSmartEmailContent(content);
-      setManualImportSummary({
-        filename: file.name,
-        ...parsed,
+    setIsParsingFile(true);
+    setManualImportSummary(null);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const resp = await api.post("/admin/communications/parse-import-file", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
       });
-    };
-    reader.readAsText(file);
+      const data = resp.data;
+      setManualImportSummary({
+        filename: data.filename || file.name,
+        totalRows: data.total_rows,
+        validEmails: data.valid_emails,
+        validCount: data.valid_count,
+        duplicateCount: data.duplicate_count,
+        invalidCount: data.invalid_count,
+        suppressedCount: data.suppressed_count,
+      });
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "File Import Failed",
+        description: err.response?.data?.detail || err.message || "Could not parse Excel/CSV file.",
+      });
+    } finally {
+      setIsParsingFile(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
   };
 
   const handlePastedTextChange = (text) => {
@@ -1174,14 +1196,22 @@ export const CampaignStudio = ({
                   onChange={handleFileUpload}
                   className="hidden"
                 />
-                <div
-                  onClick={() => fileInputRef.current?.click()}
-                  className="border-2 border-dashed border-white/15 hover:border-iris/50 rounded-xl p-6 text-center cursor-pointer transition-all bg-white/[0.02]"
-                >
-                  <FileSpreadsheet className="w-8 h-8 text-iris mx-auto mb-2 opacity-80" />
-                  <p className="text-xs text-cloud font-medium">Click to select CSV or XLSX file</p>
-                  <p className="text-[10px] text-fog mt-0.5">Scans all columns for email addresses</p>
-                </div>
+                {isParsingFile ? (
+                  <div className="border-2 border-dashed border-iris/40 rounded-xl p-8 text-center bg-iris/5">
+                    <Loader2 className="w-8 h-8 text-iris animate-spin mx-auto mb-2" />
+                    <p className="text-xs text-cloud font-medium">Parsing Excel/CSV sheets and columns…</p>
+                    <p className="text-[10px] text-fog mt-0.5">Extracting and validating email addresses</p>
+                  </div>
+                ) : (
+                  <div
+                    onClick={() => fileInputRef.current?.click()}
+                    className="border-2 border-dashed border-white/15 hover:border-iris/50 rounded-xl p-6 text-center cursor-pointer transition-all bg-white/[0.02]"
+                  >
+                    <FileSpreadsheet className="w-8 h-8 text-iris mx-auto mb-2 opacity-80" />
+                    <p className="text-xs text-cloud font-medium">Click to select CSV or XLSX file</p>
+                    <p className="text-[10px] text-fog mt-0.5">Scans all columns and sheets for email addresses</p>
+                  </div>
+                )}
               </div>
             ) : (
               <div className="space-y-2 text-xs">

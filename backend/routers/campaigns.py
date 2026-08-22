@@ -4,6 +4,7 @@ Provides endpoints for campaign lifecycle management, launch validation,
 status transitions, and telemetry metrics.
 """
 
+import asyncio
 from datetime import datetime, timezone
 import logging
 from typing import Any, Dict, List, Optional
@@ -17,6 +18,7 @@ from models.admin import AdminUser
 from models.audit import CommunicationsAuditLogModel
 from models.campaign import CampaignModel, CampaignStatus
 from services.campaign_service import CampaignService
+from services.delivery_worker import DeliveryWorker
 
 logger = logging.getLogger(__name__)
 
@@ -287,14 +289,27 @@ async def launch_campaign(
     admin: AdminUser = Depends(get_current_admin),
     db: AsyncIOMotorDatabase = Depends(get_database),
 ) -> Dict[str, Any]:
-    """Validates launch checklist and launches campaign into outbox delivery."""
+    """Validates launch checklist, freezes template, queues outbox items, and immediately begins delivery."""
     service = CampaignService()
     try:
         campaign = await service.launch_campaign(db=db, campaign_id=campaign_id, actor_email=admin.email)
+
+        # Trigger immediate outbox delivery batch synchronously/in-task
+        try:
+            worker = DeliveryWorker()
+            batch_result = await worker.process_batch(db, batch_size=50)
+            logger.info(f"Initial delivery batch for campaign {campaign_id}: {batch_result}")
+        except Exception as we:
+            logger.warning(f"Initial delivery batch failed to run inline: {we}")
+
+        # Fetch fresh campaign document after initial batch
+        updated_doc = await db.campaigns.find_one({"_id": campaign_id})
+        fresh_campaign = CampaignModel.from_mongo(updated_doc) if updated_doc else campaign
+
         return {
             "success": True,
-            "campaign": campaign.model_dump(),
-            "message": f"Campaign '{campaign.name}' successfully launched with {campaign.total_recipients} recipients.",
+            "campaign": fresh_campaign.model_dump(),
+            "message": f"Campaign '{campaign.name}' successfully launched with {campaign.total_recipients} recipient(s).",
         }
     except ValueError as e:
         raise HTTPException(
